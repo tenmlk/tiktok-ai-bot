@@ -1,10 +1,11 @@
 /**
  * ===================================
- * بوت تيك توك الذكي - نسخة Puppeteer
+ * بوت تيك توك الذكي - v3.0 كوكيز
  * ===================================
  * 
+ * يستخدم كوكيز الجلسة بدل تسجيل الدخول
  * يراقب المنشنات ويرد عليها تلقائياً بالذكاء الاصطناعي
- * يشتغل على GitHub Codespaces (مجاني - بدون بطاقة)
+ * يشتغل على GitHub Actions (مجاني - بدون بطاقة)
  */
 
 import puppeteer from 'puppeteer';
@@ -16,12 +17,13 @@ import { checkContentSafety, getRefusalResponse } from './contentFilter.js';
 // ===================================
 
 const CONFIG = {
-  // بيانات حساب تيك توك
+  // اسم المستخدم (للقراءة فقط - ما نسوي منه تسجيل دخول)
   username: process.env.TIKTOK_USERNAME || '',
-  password: process.env.TIKTOK_PASSWORD || '',
+
+  // كوكيز الجلسة (الأهم!)
+  sessionCookie: process.env.TIKTOK_SESSION || '',
 
   // إعدادات المراقبة
-  checkInterval: parseInt(process.env.CHECK_INTERVAL) || 60, // كل كم ثانية يفحص المنشنات (أقل شيء 60)
   maxRepliesPerRun: parseInt(process.env.MAX_REPLIES_PER_RUN) || 5,
 
   // إعدادات البوت
@@ -29,11 +31,11 @@ const CONFIG = {
   language: process.env.BOT_LANGUAGE || 'ar',
   safeMode: process.env.SAFE_MODE !== 'false',
 
-  // إعدادات الحماية من الحظر
-  minDelayBetweenReplies: 120,  // أقل شيء دقيقتين بين كل رد
-  maxDelayBetweenReplies: 300,  // أقصى شيء 5 دقائق
+  // إعدادات الحماية من الحظر (مختصرة للاختبار)
+  minDelayBetweenReplies: 5,    // 5 ثواني بين كل رد (للاختبار)
+  maxDelayBetweenReplies: 15,   // 15 ثانية أقصى
 
-  // منشنات تم الرد عليها (عشان ما نرد مرتين)
+  // منشنات تم الرد عليها
   repliedMentions: new Set()
 };
 
@@ -42,7 +44,6 @@ const CONFIG = {
 // ===================================
 
 async function createAIResponse(mentionText, videoDescription, mentionerUsername) {
-  // فحص أمان المحتوى
   const safety = checkContentSafety(mentionText);
   if (!safety.isSafe) {
     return getRefusalResponse(safety.category);
@@ -82,7 +83,7 @@ async function createAIResponse(mentionText, videoDescription, mentionerUsername
         },
         {
           role: 'user',
-          content: `شخص منشنك في تيك توو:
+          content: `شخص منشنك في تيك توك:
 - اسمه: @${mentionerUsername}
 - كتب: "${mentionText}"
 - وصف الفيديو: "${videoDescription || 'لا يوجد وصف'}"
@@ -101,7 +102,6 @@ async function createAIResponse(mentionText, videoDescription, mentionerUsername
       return `@${mentionerUsername} أهلاً! شكراً على المنشن 🙏`;
     }
 
-    // فحص أمان الرد
     const responseSafety = checkContentSafety(response);
     if (!responseSafety.isSafe) {
       return getRefusalResponse(responseSafety.category);
@@ -130,9 +130,6 @@ class TikTokBot {
     this.isLoggedIn = false;
   }
 
-  /**
-   * تشغيل المتصفح
-   */
   async init() {
     console.log('🌐 تشغيل المتصفح...');
 
@@ -155,7 +152,6 @@ class TikTokBot {
     this.page = await this.browser.newPage();
     await this.page.setViewport({ width: 1920, height: 1080 });
 
-    // تغيير User-Agent
     await this.page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
@@ -164,19 +160,84 @@ class TikTokBot {
   }
 
   /**
-   * تسجيل الدخول في تيك توك
+   * تسجيل الدخول بالكوكيز (بدون فتح صفحة تسجيل الدخول!)
    */
-  async login() {
-    if (!CONFIG.username || !CONFIG.password) {
-      console.log('⚠️  لا يوجد بيانات دخول - يرجى إضافة TIKTOK_USERNAME و TIKTOK_PASSWORD في .env');
-      console.log('ℹ️  سيتم محاولة الدخول يدوياً...');
+  async loginWithCookies() {
+    if (!CONFIG.sessionCookie) {
+      console.log('❌ لا يوجد كوكيز جلسة!');
+      console.log('أضف TIKTOK_SESSION في GitHub Secrets');
       return false;
     }
 
-    console.log(`🔑 تسجيل الدخول باسم @${CONFIG.username}...`);
+    console.log('🍪 تسجيل الدخول بالكوكيز...');
 
     try {
-      // فتح صفحة تسجيل الدخول
+      // فتح تيك توك أول شي عشان نقدر نحط الكوكيز
+      await this.page.goto('https://www.tiktok.com', {
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
+
+      await this.randomDelay(2000, 3000);
+
+      // حط الكوكيز
+      const cookies = CONFIG.sessionCookie.split(';').map(cookie => {
+        const [name, ...valueParts] = cookie.trim().split('=');
+        return {
+          name: name.trim(),
+          value: valueParts.join('=').trim(),
+          domain: '.tiktok.com',
+          path: '/',
+          httpOnly: false,
+          secure: true
+        };
+      }).filter(c => c.name && c.value);
+
+      await this.page.setCookie(...cookies);
+
+      console.log(`✅ تم تحميل ${cookies.length} كوكيز`);
+
+      // أعد تحميل الصفحة بالكوكيز الجديدة
+      await this.page.goto('https://www.tiktok.com', {
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
+
+      await this.randomDelay(3000, 5000);
+
+      // تحقق هل نسجلنا دخول
+      const loggedIn = await this.checkIfLoggedIn();
+
+      if (loggedIn) {
+        this.isLoggedIn = true;
+        console.log('✅ تم تسجيل الدخول بنجاح بالكوكيز!');
+        return true;
+      } else {
+        console.log('❌ الكوكيز ما اشتغلت - يمكن انتهت صلاحيتها');
+        return false;
+      }
+
+    } catch (error) {
+      console.error('❌ خطأ في تسجيل الدخول بالكوكيز:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * محاولة تسجيل الدخول باليوزر والباسورد (احتياطي)
+   */
+  async loginWithPassword() {
+    const username = process.env.TIKTOK_USERNAME || '';
+    const password = process.env.TIKTOK_PASSWORD || '';
+
+    if (!username || !password) {
+      console.log('⚠️ لا يوجد بيانات دخول (يوزر/باسورد)');
+      return false;
+    }
+
+    console.log(`🔑 محاولة تسجيل الدخول باسم @${username}...`);
+
+    try {
       await this.page.goto('https://www.tiktok.com/login', {
         waitUntil: 'networkidle2',
         timeout: 60000
@@ -184,68 +245,84 @@ class TikTokBot {
 
       await this.randomDelay(2000, 4000);
 
-      // محاولة تسجيل الدخول بالبريد الإلكتروني
-      try {
-        // الضغط على "تسجيل الدخول بالبريد/اسم المستخدم"
-        const emailTab = await this.page.$('[data-e2e="login-username"]') ||
-                          await this.page.$('input[name="username"]') ||
-                          await this.page.$('input[type="text"]');
-
-        if (emailTab) {
-          await emailTab.click();
-          await this.randomDelay(1000, 2000);
-        }
-
-        // إدخال اسم المستخدم
-        const usernameInput = await this.page.$('input[name="username"]') ||
-                               await this.page.$('input[type="text"]');
-        if (usernameInput) {
-          await usernameInput.click({ clickCount: 3 });
-          await this.page.keyboard.type(CONFIG.username, { delay: 50 + Math.random() * 100 });
-        }
-
+      // الضغط على تبويب اسم المستخدم
+      const emailTab = await this.page.$('[data-e2e="login-username"]') ||
+                        await this.page.$('input[name="username"]');
+      if (emailTab) {
+        await emailTab.click();
         await this.randomDelay(1000, 2000);
+      }
 
-        // إدخال كلمة المرور
-        const passwordInput = await this.page.$('input[type="password"]');
-        if (passwordInput) {
-          await passwordInput.click({ clickCount: 3 });
-          await this.page.keyboard.type(CONFIG.password, { delay: 50 + Math.random() * 100 });
-        }
+      // إدخال اسم المستخدم
+      const usernameInput = await this.page.$('input[name="username"]') ||
+                             await this.page.$('input[type="text"]');
+      if (usernameInput) {
+        await usernameInput.click({ clickCount: 3 });
+        await this.page.keyboard.type(username, { delay: 50 + Math.random() * 100 });
+      }
 
-        await this.randomDelay(1000, 2000);
+      await this.randomDelay(1000, 2000);
 
-        // الضغط على زر تسجيل الدخول
-        const loginButton = await this.page.$('button[data-e2e="login-button"]') ||
-                             await this.page.$('button[type="submit"]');
-        if (loginButton) {
-          await loginButton.click();
-        }
+      // إدخال كلمة المرور
+      const passwordInput = await this.page.$('input[type="password"]');
+      if (passwordInput) {
+        await passwordInput.click({ clickCount: 3 });
+        await this.page.keyboard.type(password, { delay: 50 + Math.random() * 100 });
+      }
 
-        // انتظار التحميل
-        await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+      await this.randomDelay(1000, 2000);
 
-        await this.randomDelay(3000, 5000);
+      // الضغط على زر تسجيل الدخول
+      const loginButton = await this.page.$('button[data-e2e="login-button"]') ||
+                           await this.page.$('button[type="submit"]');
+      if (loginButton) {
+        await loginButton.click();
+      }
 
-        // التحقق من تسجيل الدخول
-        const currentUrl = this.page.url();
-        if (currentUrl.includes('login') || currentUrl.includes('signup')) {
-          console.log('⚠️  فشل تسجيل الدخول التلقائي');
-          console.log('ℹ️  قد تحتاج لحل CAPTCHA يدوياً أو تسجيل الدخول يدوياً');
-          return false;
-        }
+      await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {});
+      await this.randomDelay(3000, 5000);
 
+      const loggedIn = await this.checkIfLoggedIn();
+
+      if (loggedIn) {
         this.isLoggedIn = true;
         console.log('✅ تم تسجيل الدخول بنجاح!');
         return true;
-
-      } catch (error) {
-        console.log('⚠️  فشل تسجيل الدخول:', error.message);
+      } else {
+        console.log('⚠️ فشل تسجيل الدخول - يمكن بسبب CAPTCHA');
         return false;
       }
 
     } catch (error) {
       console.error('❌ خطأ في تسجيل الدخول:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * تحقق هل المستخدم مسجل دخول
+   */
+  async checkIfLoggedIn() {
+    try {
+      // فحص هل فيه عنصر يدل إنه مسجل دخول
+      const result = await this.page.evaluate(() => {
+        // فحص وجود صورة الملف الشخصي أو زر تسجيل الخروج
+        const profileImg = document.querySelector('[data-e2e="profile-icon"]') ||
+                           document.querySelector('[class*="avatar"]') ||
+                           document.querySelector('[data-e2e="menu-profile"]');
+        const loginButton = document.querySelector('[data-e2e="login-button"]') ||
+                           document.querySelector('a[href="/login"]');
+        
+        if (profileImg) return true;
+        if (loginButton) return false;
+        
+        // فحص الكوكيز
+        const cookies = document.cookie;
+        return cookies.includes('sessionid') || cookies.includes('sid_tt') || cookies.includes('sid_guard');
+      });
+
+      return result;
+    } catch (error) {
       return false;
     }
   }
@@ -265,14 +342,21 @@ class TikTokBot {
 
       await this.randomDelay(3000, 5000);
 
-      // البحث عن المنشنات في الإشعارات
+      // أخذ سكرين شوت للتصحيح
+      try {
+        await this.page.screenshot({ path: 'debug_inbox.png', fullPage: false });
+        console.log('📸 تم أخذ سكرين شوت للإنبوكس');
+      } catch (e) {}
+
       const mentions = [];
 
       try {
         // محاولة جلب عناصر الإشعارات
         const notificationElements = await this.page.$$(
-          '[data-e2e="inbox-notification"], .notification-item, [class*="notification"]'
+          '[data-e2e="inbox-notification"], .notification-item, [class*="notification"], [class*="Notification"]'
         );
+
+        console.log(`🔍 وجد ${notificationElements.length} إشعار`);
 
         for (const element of notificationElements.slice(0, 20)) {
           try {
@@ -283,23 +367,47 @@ class TikTokBot {
             });
 
             // التحقق إنه منشن
-            if (text.includes('@' + CONFIG.username) || text.toLowerCase().includes('mentioned')) {
+            if (text.includes('@' + CONFIG.username) || 
+                text.toLowerCase().includes('mentioned') || 
+                text.includes('ذكر')) {
               mentions.push({
                 text: text.trim(),
                 link: link,
-                id: link || text.slice(0, 50) // معرّف فريد
+                id: link || text.slice(0, 50)
               });
             }
-          } catch (e) {
-            // تجاهل أخطاء العناصر الفردية
-          }
+          } catch (e) {}
         }
 
       } catch (error) {
-        console.log('⚠️  لم يتم العثور على عناصر إشعارات بالـ selectors الحالية');
+        console.log('⚠️ لم يتم العثور على إشعارات - يمكن تيك توك غيّر التصميم');
+
+        // محاولة بديلة: فحص صفحة المنشنات مباشرة
+        try {
+          await this.page.goto('https://www.tiktok.com/inbox?filter=mentions', {
+            waitUntil: 'networkidle2',
+            timeout: 60000
+          });
+
+          await this.randomDelay(3000, 5000);
+
+          const mentionElements = await this.page.$$('[class*="mention"], [class*="Mention"], a[href*="/@"]');
+          for (const element of mentionElements.slice(0, 10)) {
+            try {
+              const text = await element.evaluate(el => el.textContent || '');
+              const link = await element.evaluate(el => el.href || '');
+              if (text.trim()) {
+                mentions.push({
+                  text: text.trim(),
+                  link: link,
+                  id: link || text.slice(0, 50)
+                });
+              }
+            } catch (e) {}
+          }
+        } catch (e2) {}
       }
 
-      // تصفية المنشنات اللي تم الرد عليها
       const newMentions = mentions.filter(m => !CONFIG.repliedMentions.has(m.id));
 
       console.log(`📬 وجد ${newMentions.length} منشن جديد`);
@@ -312,7 +420,7 @@ class TikTokBot {
   }
 
   /**
-   * جلب تفاصيل الفيديو من الرابط
+   * جلب تفاصيل الفيديو
    */
   async getVideoDetails(videoUrl) {
     try {
@@ -323,7 +431,6 @@ class TikTokBot {
 
       await this.randomDelay(2000, 3000);
 
-      // استخراج وصف الفيديو
       const description = await this.page.evaluate(() => {
         const descEl = document.querySelector('[data-e2e="video-desc"]') ||
                        document.querySelector('h1') ||
@@ -344,7 +451,6 @@ class TikTokBot {
    */
   async postComment(videoUrl, comment) {
     try {
-      // فتح صفحة الفيديو
       await this.page.goto(videoUrl, {
         waitUntil: 'networkidle2',
         timeout: 60000
@@ -361,19 +467,40 @@ class TikTokBot {
       );
 
       if (!commentInput) {
-        console.log('⚠️  لم يتم العثور على خانة التعليق');
-        return false;
+        console.log('⚠️ لم يتم العثور على خانة التعليق');
+
+        // محاولة الضغط على زر التعليقات أول
+        const commentButton = await this.page.$('[data-e2e="comment-button"], [class*="comment-icon"]');
+        if (commentButton) {
+          await commentButton.click();
+          await this.randomDelay(2000, 3000);
+        }
+
+        // محاولة مرة ثانية
+        const commentInput2 = await this.page.$(
+          '[data-e2e="comment-input"] textarea, ' +
+          'textarea[placeholder], ' +
+          'div[contenteditable="true"]'
+        );
+
+        if (!commentInput2) {
+          console.log('❌ ما حصلت خانة التعليق');
+          return false;
+        }
+
+        await commentInput2.click();
+      } else {
+        await commentInput.click();
       }
 
-      await commentInput.click();
-      await this.randomDelay(1000, 2000);
+      await this.randomDelay(500, 1000);
 
-      // كتابة التعليق حرف حرف (عشان يبان طبيعي)
+      // كتابة التعليق
       await this.page.keyboard.type(comment, {
-        delay: 30 + Math.random() * 70
+        delay: 20 + Math.random() * 50
       });
 
-      await this.randomDelay(1000, 2000);
+      await this.randomDelay(500, 1000);
 
       // الضغط على زر الإرسال
       const submitButton = await this.page.$(
@@ -384,13 +511,10 @@ class TikTokBot {
 
       if (submitButton) {
         await submitButton.click();
-        await this.randomDelay(2000, 3000);
-        console.log(`✅ تم نشر التعليق: "${comment}"`);
-        return true;
+      } else {
+        await this.page.keyboard.press('Enter');
       }
 
-      // محاولة الضغط على Enter
-      await this.page.keyboard.press('Enter');
       await this.randomDelay(2000, 3000);
       console.log(`✅ تم نشر التعليق: "${comment}"`);
       return true;
@@ -401,17 +525,11 @@ class TikTokBot {
     }
   }
 
-  /**
-   * تأخير عشوائي (يحاكي سلوك بشري)
-   */
   async randomDelay(min = 1000, max = 3000) {
     const delay = min + Math.random() * (max - min);
     return new Promise(resolve => setTimeout(resolve, delay));
   }
 
-  /**
-   * إغلاق المتصفح
-   */
   async close() {
     if (this.browser) {
       await this.browser.close();
@@ -428,8 +546,8 @@ async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║      🤖 بوت تيك توك الذكي v2.0          ║
-║      يراقب المنشنات ويرد عليها          ║
+║      🤖 بوت تيك توك الذكي v3.0          ║
+║      كوكيز + ذكاء اصطناعي               ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
   `);
@@ -440,60 +558,59 @@ async function main() {
     // 1. تشغيل المتصفح
     await bot.init();
 
-    // 2. تسجيل الدخول
-    const loggedIn = await bot.login();
+    // 2. محاولة تسجيل الدخول (كوكيز أولاً، بعدين باسورد)
+    let loggedIn = false;
+
+    if (CONFIG.sessionCookie) {
+      loggedIn = await bot.loginWithCookies();
+    }
+
+    if (!loggedIn) {
+      console.log('🔄 محاولة تسجيل الدخول باليوزر والباسورد...');
+      loggedIn = await bot.loginWithPassword();
+    }
 
     if (!loggedIn) {
       console.log('');
       console.log('═══════════════════════════════════════');
-      console.log('⚠️  تسجيل الدخول التلقائي فشل');
-      console.log('قد يكون بسبب CAPTCHA أو خطأ في البيانات');
+      console.log('❌ فشل تسجيل الدخول!');
       console.log('');
-      console.log('📋 الحل:');
-      console.log('1. افتح المتصفح يدوياً في Codespaces');
-      console.log('2. سجل دخولك في تيك توك');
-      console.log('3. أعد تشغيل البوت');
-      console.log('');
-      console.log('أو أضف البيانات في ملف .env:');
-      console.log('  TIKTOK_USERNAME=اسم_المستخدم');
-      console.log('  TIKTOK_PASSWORD=كلمة_المرور');
+      console.log('📋 الحل: استخدم كوكيز الجلسة:');
+      console.log('1. افتح تيك توك في متصفحك');
+      console.log('2. سجل دخولك');
+      console.log('3. اضغط F12 > Application > Cookies');
+      console.log('4. انسخ كوكيز sessionid و sid_tt');
+      console.log('5. أضفها في GitHub Secrets:');
+      console.log('   Name: TIKTOK_SESSION');
+      console.log('   Value: sessionid=xxx; sid_tt=xxx; sid_guard=xxx');
       console.log('═══════════════════════════════════════');
       console.log('');
-      console.log('⏳ المحاولة مرة أخرى بعد 5 دقائق...');
-      await bot.randomDelay(300000, 300000);
       await bot.close();
       return;
     }
 
-    // 3. حلقة مراقبة المنشنات
-    console.log('🔄 بدء مراقبة المنشنات...');
-    console.log(`⏱️  فحص كل ${CONFIG.checkInterval} ثانية`);
+    // 3. فحص المنشنات
+    console.log('🔄 فحص المنشنات...');
     console.log('');
 
-    // في وضع GitHub Actions: دورة واحدة فقط
-    // في وضع السيرفر: حلقة مستمرة
     const singleRun = process.env.SINGLE_RUN === 'true';
 
     do {
       try {
-        // جلب المنشنات الجديدة
         const mentions = await bot.getNewMentions();
 
         for (const mention of mentions.slice(0, CONFIG.maxRepliesPerRun)) {
           console.log(`\n📬 منشن جديد: "${mention.text.substring(0, 80)}..."`);
 
-          // استخراج اسم اللي منشن
           const mentionerMatch = mention.text.match(/@(\w+)/);
           const mentionerUsername = mentionerMatch ? mentionerMatch[1] : 'user';
 
-          // جلب تفاصيل الفيديو
           let videoDescription = '';
           if (mention.link) {
             const details = await bot.getVideoDetails(mention.link);
             videoDescription = details.description;
           }
 
-          // توليد الرد
           const reply = await createAIResponse(
             mention.text,
             videoDescription,
@@ -502,7 +619,6 @@ async function main() {
 
           console.log(`💬 الرد: "${reply}"`);
 
-          // نشر التعليق
           if (mention.link) {
             const posted = await bot.postComment(mention.link, reply);
             if (posted) {
@@ -513,7 +629,7 @@ async function main() {
             }
           }
 
-          // تأخير بين الردود (عشان ما يحظرنا)
+          // تأخير بين الردود
           const delaySec = CONFIG.minDelayBetweenReplies +
             Math.random() * (CONFIG.maxDelayBetweenReplies - CONFIG.minDelayBetweenReplies);
           console.log(`⏳ انتظار ${Math.round(delaySec)} ثانية...`);
@@ -524,16 +640,16 @@ async function main() {
           console.log('📭 لا يوجد منشنات جديدة');
         }
 
-        // انتظار قبل الفحص التالي (فقط في وضع السيرفر المستمر)
         if (!singleRun) {
-          console.log(`\n⏱️  الفحص القادم بعد ${CONFIG.checkInterval} ثانية...`);
-          await bot.randomDelay(CONFIG.checkInterval * 1000, CONFIG.checkInterval * 1000);
+          const checkInterval = parseInt(process.env.CHECK_INTERVAL) || 60;
+          console.log(`\n⏱️ الفحص القادم بعد ${checkInterval} ثانية...`);
+          await bot.randomDelay(checkInterval * 1000, checkInterval * 1000);
         }
 
       } catch (error) {
         console.error('❌ خطأ في حلقة المراقبة:', error.message);
         if (singleRun) break;
-        await bot.randomDelay(30000, 60000); // انتظار قبل إعادة المحاولة
+        await bot.randomDelay(30000, 60000);
       }
     } while (!singleRun);
 
@@ -547,5 +663,4 @@ async function main() {
 export { TikTokBot, createAIResponse, CONFIG };
 export default main;
 
-// تشغيل مباشر
 main().catch(console.error);
