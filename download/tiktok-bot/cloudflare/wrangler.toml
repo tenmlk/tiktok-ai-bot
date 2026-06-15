@@ -1,8 +1,4 @@
-{
-  "name": "tiktok-ai-bot",
-  "version": "1.0.0",
-  "description": "🤖 بوت تيك توك ذكي على Cloudflare Workers",
-  "main": "worker.js",
-  "compatibility_date": "2024-12-01",
-  "compatibility_flags": ["nodejs_compat"]
-}
+name = "tiktok-ai-bot"
+main = "worker.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
