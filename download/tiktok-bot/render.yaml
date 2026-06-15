@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: tiktok-ai-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/keepAlive.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_LANGUAGE
+        value: ar
+      - key: BOT_PERSONALITY
+        value: friendly
+      - key: SAFE_MODE
+        value: "true"
+      - key: MAX_VIDEOS_PER_RUN
+        value: "5"
+      - key: DELAY_BETWEEN_ACTIONS
+        value: "30"
+      - key: TARGET_HASHTAGS
+        value: funny,comedy,daily,vlog
+    healthCheckPath: /health
