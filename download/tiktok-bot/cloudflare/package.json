@@ -1,0 +1,10 @@
+{
+  "name": "tiktok-ai-bot-worker",
+  "version": "1.0.0",
+  "description": "🤖 بوت تيك توك ذكي على Cloudflare Workers",
+  "main": "worker.js",
+  "type": "module",
+  "dependencies": {
+    "z-ai-web-dev-sdk": "latest"
+  }
+}
