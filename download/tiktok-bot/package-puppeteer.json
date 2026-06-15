@@ -1,0 +1,17 @@
+{
+  "name": "tiktok-ai-bot-puppeteer",
+  "version": "2.0.0",
+  "description": "🤖 بوت تيك توك ذكي يراقب المنشنات ويرد عليها",
+  "main": "src/puppeteer/bot.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/puppeteer/bot.js",
+    "dev": "node --watch src/puppeteer/bot.js",
+    "install-chrome": "npx puppeteer browsers install chrome"
+  },
+  "dependencies": {
+    "z-ai-web-dev-sdk": "latest",
+    "puppeteer": "^22.0.0",
+    "dotenv": "^16.3.1"
+  }
+}
