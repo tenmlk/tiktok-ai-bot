@@ -136,8 +136,11 @@ class TikTokBot {
   async init() {
     console.log('🌐 تشغيل المتصفح...');
 
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+
     this.browser = await puppeteer.launch({
       headless: 'new',
+      executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -467,7 +470,11 @@ async function main() {
     console.log(`⏱️  فحص كل ${CONFIG.checkInterval} ثانية`);
     console.log('');
 
-    while (true) {
+    // في وضع GitHub Actions: دورة واحدة فقط
+    // في وضع السيرفر: حلقة مستمرة
+    const singleRun = process.env.SINGLE_RUN === 'true';
+
+    do {
       try {
         // جلب المنشنات الجديدة
         const mentions = await bot.getNewMentions();
@@ -517,15 +524,18 @@ async function main() {
           console.log('📭 لا يوجد منشنات جديدة');
         }
 
-        // انتظار قبل الفحص التالي
-        console.log(`\n⏱️  الفحص القادم بعد ${CONFIG.checkInterval} ثانية...`);
-        await bot.randomDelay(CONFIG.checkInterval * 1000, CONFIG.checkInterval * 1000);
+        // انتظار قبل الفحص التالي (فقط في وضع السيرفر المستمر)
+        if (!singleRun) {
+          console.log(`\n⏱️  الفحص القادم بعد ${CONFIG.checkInterval} ثانية...`);
+          await bot.randomDelay(CONFIG.checkInterval * 1000, CONFIG.checkInterval * 1000);
+        }
 
       } catch (error) {
         console.error('❌ خطأ في حلقة المراقبة:', error.message);
+        if (singleRun) break;
         await bot.randomDelay(30000, 60000); // انتظار قبل إعادة المحاولة
       }
-    }
+    } while (!singleRun);
 
   } catch (error) {
     console.error('💥 خطأ فادح:', error.message);
