@@ -1,11 +1,9 @@
 name: TikTok Bot - Check Mentions
 
 on:
-  # تشغيل كل 5 دقائق
   schedule:
     - cron: '*/5 * * * *'
 
-  # تشغيل يدوي (زر في صفحة Actions)
   workflow_dispatch:
     inputs:
       max_replies:
@@ -42,13 +40,13 @@ jobs:
       - name: Install dependencies
         run: |
           npm init -y
-          npm install z-ai-web-dev-sdk puppeteer dotenv
+          npm install z-ai-web-dev-sdk puppeteer puppeteer-extra puppeteer-extra-plugin-stealth dotenv
 
       - name: Run TikTok Bot
         env:
           TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
           TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
-          CHECK_INTERVAL: 120
+          TIKTOK_SESSION: ${{ secrets.TIKTOK_SESSION }}
           MAX_REPLIES_PER_RUN: ${{ github.event.inputs.max_replies || '5' }}
           BOT_PERSONALITY: ${{ github.event.inputs.personality || 'friendly' }}
           BOT_LANGUAGE: ar
@@ -57,12 +55,9 @@ jobs:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome-stable
           DISPLAY: ':99'
         run: |
-          # تشغيل virtual display للـ headless browser
           sudo apt-get install -y xvfb
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 2
-
-          # تشغيل البوت
           node src/puppeteer/bot.js
 
       - name: Bot completed
