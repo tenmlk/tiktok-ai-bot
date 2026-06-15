@@ -1,9 +1,9 @@
 name: TikTok Bot - Check Mentions
 
 on:
-  # تشغيل كل 30 دقيقة
+  # تشغيل كل 5 دقائق
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
 
   # تشغيل يدوي (زر في صفحة Actions)
   workflow_dispatch:
