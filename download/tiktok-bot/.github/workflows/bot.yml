@@ -1,0 +1,70 @@
+name: TikTok Bot - Check Mentions
+
+on:
+  # تشغيل كل 30 دقيقة
+  schedule:
+    - cron: '*/30 * * * *'
+
+  # تشغيل يدوي (زر في صفحة Actions)
+  workflow_dispatch:
+    inputs:
+      max_replies:
+        description: 'عدد الردود الأقصى'
+        required: false
+        default: '5'
+      personality:
+        description: 'شخصية البوت (friendly/funny/critic/informative)'
+        required: false
+        default: 'friendly'
+
+jobs:
+  check-mentions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Chrome
+        run: |
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
+
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install z-ai-web-dev-sdk puppeteer dotenv
+
+      - name: Run TikTok Bot
+        env:
+          TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
+          CHECK_INTERVAL: 120
+          MAX_REPLIES_PER_RUN: ${{ github.event.inputs.max_replies || '5' }}
+          BOT_PERSONALITY: ${{ github.event.inputs.personality || 'friendly' }}
+          BOT_LANGUAGE: ar
+          SAFE_MODE: true
+          SINGLE_RUN: true
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome-stable
+          DISPLAY: ':99'
+        run: |
+          # تشغيل virtual display للـ headless browser
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+
+          # تشغيل البوت
+          node src/puppeteer/bot.js
+
+      - name: Bot completed
+        if: always()
+        run: echo "Bot run completed at $(date)"
