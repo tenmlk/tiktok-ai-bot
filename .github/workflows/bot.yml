@@ -47,22 +47,18 @@ jobs:
           # إنشاء الكونفيج في عدة أماكن عشان z-ai-web-dev-sdk يلقاه
           CONFIG_CONTENT='{"provider":"zai","apiKey":"default"}'
           
-          # 1. المجلد المحلي (المشروع) - ملف
-          echo "$CONFIG_CONTENT" > .z-ai-config
-          
-          # 2. مجلد البيت - مجلد + ملف كونفيج
+          # 1. مجلد البيت - مجلد + ملف كونفيج (الأهم)
           mkdir -p $HOME/.z-ai-config
           echo "$CONFIG_CONTENT" > $HOME/.z-ai-config/config.json
           
-          # 3. /etc
+          # 2. /etc
           echo "$CONFIG_CONTENT" | sudo tee /etc/.z-ai-config > /dev/null
           
-          # 4. مشروع فرعي
+          # 3. المجلد المحلي (المشروع) - مجلد + ملف كونفيج
           mkdir -p .z-ai-config
           echo "$CONFIG_CONTENT" > .z-ai-config/config.json
           
           echo "✅ z-ai config created"
-          cat .z-ai-config
           cat $HOME/.z-ai-config/config.json
 
       - name: Run TikTok Bot v8.0
