@@ -434,14 +434,20 @@ class TikTokBot {
 
   /**
    * تحقق هل المستخدم مسجل دخول
+   * v8.1: طريقة أكثر مرونة مع عدة محاولات
    */
   async checkIfLoggedIn() {
     try {
+      // انتظار إضافي عشان الصفحة تتحمل
+      await this.randomDelay(2000, 3000);
+
       // الطريقة 1: فحص العناصر في الصفحة
       const elementCheck = await this.page.evaluate(() => {
         const profileImg = document.querySelector('[data-e2e="profile-icon"]') ||
-                           document.querySelector('[class*="avatar"]') ||
-                           document.querySelector('[data-e2e="menu-profile"]');
+                           document.querySelector('[data-e2e="menu-profile"]') ||
+                           document.querySelector('[class*="avatar"][class*="logged"]') ||
+                           document.querySelector('img[alt*="profile"]') ||
+                           document.querySelector('[data-e2e="profile-avatar"]');
         const loginBtn = document.querySelector('[data-e2e="login-button"]') ||
                         document.querySelector('a[href="/login"]');
 
@@ -466,12 +472,29 @@ class TikTokBot {
         return false;
       }
 
-      // الطريقة 3: محاولة الوصول للبروفايل
+      // الطريقة 3: فحص الكوكيز اللي نقدر نوصلها
+      const cookieCheck = await this.page.evaluate(() => {
+        const cookies = document.cookie;
+        // إذا فيه sessionid أو sid_tt في الكوكيز = مسجل
+        if (cookies.includes('sessionid') || cookies.includes('sid_tt') || 
+            cookies.includes('uid_tt') || cookies.includes('d_ticket')) {
+          return { loggedIn: true, method: 'cookies-present' };
+        }
+        return { loggedIn: null, method: 'no-session-cookies' };
+      });
+
+      if (cookieCheck.loggedIn === true) {
+        console.log(`✅ تسجيل الدخول مؤكد (كوكيز: ${cookieCheck.method})`);
+        return true;
+      }
+
+      // الطريقة 4: محاولة الوصول للبروفايل
+      console.log('🔍 فحص البروفايل...');
       await this.page.goto(`https://www.tiktok.com/@${CONFIG.username}`, {
         waitUntil: 'domcontentloaded',
         timeout: 30000
       });
-      await this.randomDelay(2000, 3000);
+      await this.randomDelay(3000, 5000);
 
       const profileCheck = await this.page.evaluate(() => {
         // إذا في زر Edit profile = مسجل دخول وحسابك
@@ -479,10 +502,13 @@ class TikTokBot {
                        document.querySelector('button[data-e2e="profile-following"]');
         // إذا في زر Follow = ما عندك صلاحية (مو حسابك أو مو مسجل)
         const followBtn = document.querySelector('[data-e2e="follow-button"]');
+        // إذا في username display
+        const usernameEl = document.querySelector('[data-e2e="user-title"]');
         
         return {
           hasEdit: !!editBtn,
-          hasFollow: !!followBtn
+          hasFollow: !!followBtn,
+          hasUsername: !!usernameEl
         };
       });
 
@@ -495,10 +521,21 @@ class TikTokBot {
         return false;
       }
 
+      // الطريقة 5: إذا عندنا كوكيز session، نعتبر مسجل حتى لو ما شفنا عنصر
+      if (CONFIG.sessionCookie && (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt'))) {
+        console.log('⚠️ لم أجد عنصر تأكيد، لكن الكوكيز موجودة - أعتبر مسجل الدخول');
+        return true;
+      }
+
       console.log('⚠️ غير متأكد من حالة الدخول');
       return false;
     } catch (error) {
       console.error('❌ خطأ في فحص الدخول:', error.message);
+      // إذا عندنا كوكيز session، نعتبر مسجل
+      if (CONFIG.sessionCookie && (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt'))) {
+        console.log('⚠️ خطأ في الفحص لكن الكوكيز موجودة - أعتبر مسجل الدخول');
+        return true;
+      }
       return false;
     }
   }
