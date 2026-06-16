@@ -166,10 +166,11 @@ class TikTokBot {
     this.isLoggedIn = false;
     this.runId = Date.now();
     this.apiIntercepted = [];
+    this.noticeData = []; // v10.1: تخزين بيانات إشعارات API الكاملة
   }
 
   async init() {
-    console.log('🌐 تشغيل المتصفح v10.0...');
+    console.log('🌐 تشغيل المتصفح v10.1...');
     this.browser = await puppeteerExtra.launch({
       headless: 'new',
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -204,7 +205,7 @@ class TikTokBot {
       console.log(`✅ تم تعيين ${cookies.length} كوكيز`);
     }
 
-    // اعتراض API للتصحيح
+    // v10.1: اعتراض API وتخزين بيانات الإشعارات
     this.page.on('response', async (response) => {
       const url = response.url();
       if (url.includes('/api/') && url.includes('tiktok.com')) {
@@ -214,13 +215,24 @@ class TikTokBot {
             const text = await response.text().catch(() => '');
             this.apiIntercepted.push({ url: url.substring(0, 200), status, bodyPreview: text.substring(0, 500) });
             console.log(`📡 API: ${url.substring(0, 80)} → ${status} (${text.length}b)`);
+            
+            // v10.1: خزّن بيانات الإشعارات الكاملة
+            if (url.includes('/api/notice/multi/') || url.includes('/api/inbox/notice_list/')) {
+              try {
+                let jsonStr = text;
+                if (jsonStr.startsWith('while(1)') || jsonStr.startsWith('for(;;)')) jsonStr = jsonStr.substring(jsonStr.indexOf('{'));
+                const fb = jsonStr.indexOf('{'); if (fb > 0) jsonStr = jsonStr.substring(fb);
+                const parsed = JSON.parse(jsonStr);
+                this.noticeData.push({ url: url.substring(0, 100), data: parsed });
+              } catch (e) {}
+            }
           }
         } catch (e) {}
       }
     });
 
     try { fs.mkdirSync(CONFIG.debugDir, { recursive: true }); } catch (e) {}
-    console.log('✅ المتصفح v10.0 جاهز');
+    console.log('✅ المتصفح v10.1 جاهز');
   }
 
   parseCookies(cookieStr) {
@@ -323,146 +335,187 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.0: جلب المنشنات عبر API فقط
-  // (لا نفتح صفحات فيديو!)
+  // v10.1: جلب المنشنات - نهج جديد!
+  // 1. افتح صفحة الإشعارات (لتشغيل API interception)
+  // 2. حلل بيانات notice/multi API المعترضة (174KB فيها كل شيء!)
+  // 3. استخرج videoId + commentId من البيانات المهيكلة
   // ===================================
 
-  async fetchMentionsViaAPI() {
-    console.log('📡 جلب المنشنات عبر API...');
-    try {
-      // تأكد إننا على تيك توك
-      if (!this.page.url().includes('tiktok.com')) {
-        await this.page.goto('https://www.tiktok.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await this.randomDelay(2000, 3000);
-      }
+  async fetchMentionsFromInterceptedAPI() {
+    console.log('📡 جلب المنشنات من API المعترضة...');
+    
+    // افتح صفحة الإشعارات عشان نشغل الـ API calls
+    await this.page.goto('https://www.tiktok.com/inbox', { waitUntil: 'networkidle2', timeout: 60000 });
+    await this.randomDelay(3000, 5000);
+    await this.debugScreenshot('notif-inbox');
 
-      const mentions = [];
-      
-      // الطريقة 1: جلب إشعارات صندوق الوارد
-      for (const group of [2, 3, 5]) {
-        try {
-          const result = await this.page.evaluate(async (grp) => {
-            try {
-              const params = new URLSearchParams({
-                group: String(grp),
-                count: '20',
-                aid: '1988',
-                app_language: 'ar',
-                app_name: 'tiktok_web'
-              });
-              const resp = await fetch(`https://www.tiktok.com/api/inbox/notice_list/?${params}`, {
-                credentials: 'include',
-                headers: { 'Accept': 'application/json', 'Referer': 'https://www.tiktok.com/' }
-              });
-              if (!resp.ok) return { error: `HTTP ${resp.status}` };
-              const text = await resp.text();
-              let json = text;
-              if (json.startsWith('while(1)') || json.startsWith('for(;;)')) json = json.substring(json.indexOf('{'));
-              const fb = json.indexOf('{'); if (fb > 0) json = json.substring(fb);
-              return { data: JSON.parse(json), preview: text.substring(0, 300) };
-            } catch (e) { return { error: e.message }; }
-          }, group);
+    const mentions = [];
 
-          if (result.error) { console.log(`⚠️ API group ${group}: ${result.error}`); continue; }
-          console.log(`✅ API group ${group}: ${result.preview?.substring(0, 100)}`);
-
-          // استخراج المنشنات من البيانات
-          let list = [];
-          const d = result.data;
-          for (const p of [d.notice_list, d.notifications, d.data, d.body?.notice_list, d.data?.notice_list, d.list, d.items]) {
-            if (Array.isArray(p) && p.length > 0) { list = p; break; }
-          }
-          if (list.length === 0) {
-            for (const k of Object.keys(d)) {
-              if (Array.isArray(d[k]) && d[k].length > 0 && typeof d[k][0] === 'object') { list = d[k]; break; }
-            }
-          }
-          console.log(`📋 ${list.length} إشعار من group ${group}`);
-
-          for (const n of list) {
-            const content = n.content || n.title || n.body || n.text || '';
-            const user = n.from_user?.unique_id || n.user?.unique_id || n.author?.unique_id || '';
-            const url = n.target_url || n.url || n.link || '';
-            const comment = n.comment?.text || n.content || '';
-            const commentId = n.comment?.cid || n.comment?.id || n.cid || '';
-            const videoId = n.target_url?.match(/\/video\/(\d+)/)?.[1] || n.aweme_id || n.video_id || '';
-            const type = n.type || n.sub_type || '';
-            
-            // فحص هل هذا منشن
-            const isMention = content.includes('@' + CONFIG.username) || 
-                             comment.includes('@' + CONFIG.username) || 
-                             String(type).includes('mention') ||
-                             content.toLowerCase().includes('mentioned');
-            
-            if (isMention) {
-              const id = n.id || `${videoId}::${commentId}::${user}`;
-              if (!CONFIG.repliedMentions.has(String(id))) {
-                mentions.push({
-                  text: comment || content,
-                  mentioner: user || 'user',
-                  videoUrl: url,
-                  videoId,
-                  commentId,
-                  id: String(id),
-                  source: 'api',
-                  rawData: n
-                });
-                console.log(`📬 منشن! @${user}: ${(comment || content).substring(0, 60)}`);
+    // v10.1: حلل بيانات notice/multi API المعترضة
+    console.log(`📊 API المعترضة: ${this.noticeData.length} رد`);
+    
+    for (const noticeResp of this.noticeData) {
+      try {
+        const data = noticeResp.data;
+        // notice/multi API يرجع بيانات في مفاتيح مختلفة
+        const notices = data.data || data.notice_list || data.notifications || data.list || [];
+        const noticeArray = Array.isArray(notices) ? notices : [];
+        
+        if (noticeArray.length === 0) {
+          // جرب كل المفاتيح
+          for (const key of Object.keys(data)) {
+            if (Array.isArray(data[key]) && data[key].length > 0 && typeof data[key][0] === 'object') {
+              for (const item of data[key]) {
+                const m = this.parseNoticeItem(item);
+                if (m && !CONFIG.repliedMentions.has(m.id)) {
+                  mentions.push(m);
+                  console.log(`📬 منشن! @${m.mentioner}: "${m.text.substring(0, 60)}" videoId=${m.videoId} commentId=${m.commentId}`);
+                }
               }
             }
           }
-        } catch (e) { console.log(`⚠️ خطأ API group ${group}:`, e.message); }
-      }
+        } else {
+          for (const item of noticeArray) {
+            const m = this.parseNoticeItem(item);
+            if (m && !CONFIG.repliedMentions.has(m.id)) {
+              mentions.push(m);
+              console.log(`📬 منشن! @${m.mentioner}: "${m.text.substring(0, 60)}" videoId=${m.videoId} commentId=${m.commentId}`);
+            }
+          }
+        }
+      } catch (e) { console.log(`⚠️ خطأ تحليل إشعار: ${e.message}`); }
+    }
 
-      return mentions;
-    } catch (e) { console.error('❌ خطأ:', e.message); return []; }
+    // Fallback: DOM-based extraction مع استخراج videoId أفضل
+    if (mentions.length === 0) {
+      console.log('⚠️ API المعترضة ما فيها منشنات، جرب DOM...');
+      const domMentions = await this.extractMentionsFromDOM();
+      mentions.push(...domMentions);
+    }
+
+    return mentions;
   }
 
-  // v10.0: جلب المنشنات من صفحة الإشعارات (DOM-based)
-  async findMentionsInNotificationsPage() {
-    console.log('🔔 الطريقة 2: صفحة الإشعارات (DOM)...');
-    try {
-      await this.page.goto('https://www.tiktok.com/inbox', { waitUntil: 'networkidle2', timeout: 60000 });
-      await this.randomDelay(3000, 5000);
-      await this.debugScreenshot('notif-inbox');
+  // v10.1: تحليل عنصر إشعار من API
+  parseNoticeItem(item) {
+    if (!item || typeof item !== 'object') return null;
+    
+    // استخراج النص
+    const content = item.content || item.title || item.body || item.text || '';
+    const comment = item.comment?.text || item.comment?.content || '';
+    
+    // استخراج اسم المستخدم
+    const user = item.from_user?.unique_id || item.from_user?.nickname || 
+                 item.user?.unique_id || item.author?.unique_id || '';
+    
+    // استخراج videoId - الطريقة الأهم!
+    let videoId = '';
+    // الطريقة 1: من aweme_id أو item_id
+    videoId = item.aweme_id || item.item_id || item.video_id || item.target?.aweme_id || '';
+    // الطريقة 2: من الرابط
+    const url = item.target_url || item.url || item.link || item.target?.url || '';
+    const videoMatch = url.match(/\/video\/(\d+)/);
+    if (!videoId && videoMatch) videoId = videoMatch[1];
+    // الطريقة 3: من معرف التعليق
+    if (!videoId && item.comment?.aweme_id) videoId = item.comment.aweme_id;
+    // الطريقة 4: من كائن embedded
+    if (!videoId && item.aweme?.id) videoId = item.aweme.id;
+    if (!videoId && item.item?.id) videoId = item.item.id;
+    
+    // استخراج commentId
+    let commentId = item.comment?.cid || item.comment?.id || item.cid || '';
+    
+    // استخراج نوع الإشعار
+    const type = item.type || item.sub_type || item.notify_type || '';
+    
+    // فحص هل هذا منشن
+    const isMention = content.includes('@' + CONFIG.username) || 
+                     comment.includes('@' + CONFIG.username) || 
+                     String(type).includes('mention') ||
+                     content.toLowerCase().includes('mentioned') ||
+                     content.includes('ذكر');
+    
+    if (!isMention) return null;
+    
+    const id = item.id || `${videoId}::${commentId}::${user}`;
+    return {
+      text: comment || content,
+      mentioner: user || 'user',
+      videoUrl: url,
+      videoId: String(videoId),
+      commentId: String(commentId),
+      id: String(id),
+      source: 'api-intercepted',
+      rawData: item
+    };
+  }
 
+  // DOM-based extraction محسّن
+  async extractMentionsFromDOM() {
+    const mentions = [];
+    try {
       const notifData = await this.page.evaluate((bot) => {
         const results = [];
         
-        // ابحث عن روابط الفيديوهات في الإشعارات
-        document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+        // v10.1: ابحث عن كل الروابط اللي فيها /video/ أو /v/
+        document.querySelectorAll('a[href*="/video/"], a[href*="/v/"]').forEach(a => {
           const text = (a.closest('div')?.textContent || a.textContent || '').trim();
           const isMention = text.includes('@' + bot) || text.toLowerCase().includes('mentioned') || text.includes('ذكر');
           if (isMention) {
-            const videoMatch = a.href.match(/\/video\/(\d+)/);
+            const href = a.href || '';
+            const videoMatch = href.match(/\/video\/(\d+)/);
             results.push({
               text: text.substring(0, 300),
-              url: a.href,
+              url: href,
               videoId: videoMatch?.[1] || '',
               type: 'mention'
             });
           }
         });
 
-        // ابحث عن عناصر الإشعارات
-        document.querySelectorAll('[data-e2e="inbox-notification"], [class*="notification"]').forEach(item => {
-          const text = (item.textContent || '').trim();
-          const link = item.querySelector('a')?.href || '';
-          if (text.length > 5 && (text.includes('mentioned') || text.includes('ذكر'))) {
-            const videoMatch = link.match(/\/video\/(\d+)/);
-            results.push({
-              text: text.substring(0, 300),
-              url: link,
-              videoId: videoMatch?.[1] || '',
-              type: 'mention'
-            });
-          }
-        });
+        // v10.1: ابحث عن كل عناصر الإشعارات (حتى بدون رابط فيديو مباشر)
+        const notifSelectors = [
+          '[data-e2e="inbox-notification"]',
+          '[data-e2e="notification-item"]',
+          '[class*="notification"]',
+          '[class*="Notification"]',
+          '[class*="inbox-item"]',
+          '[class*="InboxItem"]'
+        ];
+        
+        for (const sel of notifSelectors) {
+          document.querySelectorAll(sel).forEach(item => {
+            const text = (item.textContent || '').trim();
+            if (text.length > 5 && (text.includes('mentioned') || text.includes('ذكر') || text.includes('@' + bot))) {
+              // ابحث عن أي رابط داخل العنصر
+              const allLinks = item.querySelectorAll('a');
+              let link = '';
+              for (const a of allLinks) {
+                if (a.href && (a.href.includes('/video/') || a.href.includes('/v/'))) {
+                  link = a.href;
+                  break;
+                }
+              }
+              // إذا ما لقينا رابط، جرب onclick أو data attributes
+              if (!link) {
+                const clickable = item.querySelector('[onclick]') || item;
+                link = clickable.getAttribute('data-url') || clickable.getAttribute('data-href') || '';
+              }
+              
+              const videoMatch = link.match(/\/video\/(\d+)/);
+              results.push({
+                text: text.substring(0, 300),
+                url: link,
+                videoId: videoMatch?.[1] || '',
+                type: 'mention'
+              });
+            }
+          });
+        }
 
         return results;
       }, CONFIG.username);
 
-      const mentions = [];
       for (const item of notifData) {
         const id = item.url || item.text.slice(0, 50);
         if (!CONFIG.repliedMentions.has(id)) {
@@ -476,29 +529,27 @@ class TikTokBot {
             videoId: item.videoId,
             commentId: '',
             id,
-            source: 'notifications'
+            source: 'notifications-dom'
           });
         }
       }
-      console.log(`🔔 وجد ${mentions.length} منشن من صفحة الإشعارات`);
-      return mentions;
-    } catch (e) { console.error('❌ خطأ:', e.message); return []; }
+      console.log(`🔔 وجد ${mentions.length} منشن من DOM`);
+    } catch (e) { console.error('❌ خطأ DOM:', e.message); }
+    return mentions;
   }
 
   async getAllMentions() {
     console.log('\n📥 ═══════════════════════════════');
-    console.log('📥 فحص المنشنات (بدون فتح فيديو!)');
+    console.log('📥 فحص المنشنات (v10.1 - API Intercept)');
     console.log('📥 ═══════════════════════════════');
 
-    let all = [];
-    all = all.concat(await this.fetchMentionsViaAPI());
-    if (all.length === 0) all = all.concat(await this.findMentionsInNotificationsPage());
+    const mentions = await this.fetchMentionsFromInterceptedAPI();
 
     const unique = []; const seen = new Set();
-    for (const m of all) { if (!seen.has(m.id)) { seen.add(m.id); unique.push(m); } }
+    for (const m of mentions) { if (!seen.has(m.id)) { seen.add(m.id); unique.push(m); } }
 
     console.log(`\n📊 النتيجة: ${unique.length} منشن`);
-    unique.forEach(m => console.log(`   📬 [@${m.mentioner}]: "${m.text.substring(0, 60)}..." (${m.source})`));
+    unique.forEach(m => console.log(`   📬 [@${m.mentioner}]: "${m.text.substring(0, 60)}" videoId=${m.videoId} (${m.source})`));
     return unique;
   }
 
@@ -556,7 +607,7 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.0: رد عبر API تعليق
+  // v10.1: رد عبر API تعليق
   // POST /api/comment/create/reply/
   // ===================================
   async replyViaAPI(mention, replyText) {
@@ -564,8 +615,8 @@ class TikTokBot {
     try {
       const result = await this.page.evaluate(async (data) => {
         try {
-          // الطريقة 1a: رد على تعليق محدد
-          if (data.commentId) {
+          // v10.1: رد على تعليق محدد
+          if (data.commentId && data.videoId) {
             const params = new URLSearchParams({
               aid: '1988',
               app_language: 'ar',
@@ -581,36 +632,31 @@ class TikTokBot {
               headers: {
                 'Accept': 'application/json',
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': 'https://www.tiktok.com/',
+                'Referer': `https://www.tiktok.com/@/video/${data.videoId}`,
                 'Origin': 'https://www.tiktok.com'
               }
             });
             
             const text = await resp.text();
-            return { status: resp.status, body: text.substring(0, 500), method: 'reply' };
+            return { status: resp.status, body: text.substring(0, 500), method: 'reply', videoId: data.videoId, commentId: data.commentId };
           }
-          return { status: 0, body: 'no commentId', method: 'reply' };
+          return { status: 0, body: `no commentId or videoId (videoId=${data.videoId}, commentId=${data.commentId})`, method: 'reply' };
         } catch (e) { return { error: e.message, method: 'reply' }; }
       }, { videoId: mention.videoId, commentId: mention.commentId, replyText });
 
       if (result.error) {
         console.log(`⚠️ API رد: ${result.error}`);
       } else {
-        console.log(`📡 API رد: ${result.status} → ${result.body?.substring(0, 150)}`);
+        console.log(`📡 API رد: ${result.status} videoId=${result.videoId} → ${result.body?.substring(0, 150)}`);
         if (result.status === 200) {
-          // تحقق إن الرد فعلاً اننشر
           try {
             const json = JSON.parse(result.body);
-            if (json.status_code === 0 || json.status_msg === 'success' || json.comment) {
+            if (json.status_code === 0 || json.comment) {
               console.log('✅ رد عبر API ناجح!');
               return true;
             }
+            console.log(`⚠️ API status_code=${json.status_code} status_msg=${json.status_msg}`);
           } catch (e) {}
-          // حتى لو ما فهمنا الرد، إذا status 200 يمكن اشتغل
-          if (result.body && !result.body.includes('error') && !result.body.includes('blocked')) {
-            console.log('✅ رد عبر API (محتمل نجاح)!');
-            return true;
-          }
         }
       }
     } catch (e) { console.log(`⚠️ خطأ API رد: ${e.message}`); }
@@ -618,11 +664,15 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.0: تعليق جديد عبر API
+  // v10.1: تعليق جديد عبر API
   // POST /api/comment/create/
   // ===================================
   async commentViaAPI(mention, replyText) {
     console.log('📡 الطريقة 2: تعليق جديد عبر API...');
+    if (!mention.videoId) {
+      console.log('⚠️ لا يوجد videoId - لا أستطيع التعليق عبر API');
+      return false;
+    }
     try {
       const result = await this.page.evaluate(async (data) => {
         try {
@@ -640,30 +690,32 @@ class TikTokBot {
             headers: {
               'Accept': 'application/json',
               'Content-Type': 'application/x-www-form-urlencoded',
-              'Referer': 'https://www.tiktok.com/',
+              'Referer': `https://www.tiktok.com/@/video/${data.videoId}`,
               'Origin': 'https://www.tiktok.com'
             }
           });
 
           const text = await resp.text();
-          return { status: resp.status, body: text.substring(0, 500), method: 'comment' };
+          return { status: resp.status, body: text.substring(0, 500), method: 'comment', videoId: data.videoId };
         } catch (e) { return { error: e.message, method: 'comment' }; }
       }, { videoId: mention.videoId, replyText });
 
       if (result.error) {
         console.log(`⚠️ API تعليق: ${result.error}`);
       } else {
-        console.log(`📡 API تعليق: ${result.status} → ${result.body?.substring(0, 150)}`);
+        console.log(`📡 API تعليق: ${result.status} videoId=${result.videoId} → ${result.body?.substring(0, 200)}`);
         if (result.status === 200) {
           try {
             const json = JSON.parse(result.body);
-            if (json.status_code === 0 || json.status_msg === 'success' || json.comment) {
+            if (json.status_code === 0 || json.comment) {
               console.log('✅ تعليق عبر API ناجح!');
               return true;
             }
+            console.log(`⚠️ API status_code=${json.status_code} status_msg=${json.status_msg}`);
           } catch (e) {}
-          if (result.body && !result.body.includes('error') && !result.body.includes('blocked')) {
-            console.log('✅ تعليق عبر API (محتمل نجاح)!');
+          // إذا ما فهمنا الرد لكن ما فيه error، اعتبره نجاح محتمل
+          if (result.body && !result.body.includes('"status_code":8') && !result.body.includes('blocked')) {
+            console.log('⚠️ نتيجة غير واضحة - قد يكون نجاح');
             return true;
           }
         }
@@ -904,8 +956,8 @@ async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║      🤖 بوت تيك توك الذكي v10.0         ║
-║      API-Based (No CAPTCHA!)            ║
+║      🤖 بوت تيك توك الذكي v10.1         ║
+║      API Intercept + Smart Reply         ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
   `);
