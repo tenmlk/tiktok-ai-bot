@@ -12,6 +12,7 @@ import ZAI from 'z-ai-web-dev-sdk';
 import { checkContentSafety, getRefusalResponse } from './contentFilter.js';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 puppeteerExtra.use(StealthPlugin());
 
@@ -29,22 +30,43 @@ const CONFIG = {
   debugDir: process.env.DEBUG_DIR || '/tmp/bot-debug'
 };
 
-// v9.1: أنشئ z-ai-config تلقائياً
+// v9.2: أنشئ z-ai-config تلقائياً بالصيغة الصحيحة
 function ensureZAIConfig() {
-  const configContent = '{"provider":"zai","apiKey":"default"}';
+  // SDK يحتاج baseUrl + apiKey على الأقل
+  // نستخدم البيئة الحالية إذا متوفرة
+  const configContent = JSON.stringify({
+    baseUrl: process.env.ZAI_BASE_URL || 'https://internal-api.z.ai/v1',
+    apiKey: process.env.ZAI_API_KEY || 'Z.ai',
+    chatId: process.env.ZAI_CHAT_ID || '',
+    token: process.env.ZAI_TOKEN || '',
+    userId: process.env.ZAI_USER_ID || ''
+  });
   const configPaths = [
     path.join(process.cwd(), '.z-ai-config'),
-    path.join(process.env.HOME || '/root', '.z-ai-config'),
+    path.join(os.homedir(), '.z-ai-config'),
     '/etc/.z-ai-config'
   ];
+  let found = false;
   for (const cp of configPaths) {
     try {
-      if (!fs.existsSync(cp)) {
+      if (fs.existsSync(cp)) {
+        const existing = JSON.parse(fs.readFileSync(cp, 'utf-8'));
+        if (existing.baseUrl && existing.apiKey) {
+          console.log(`✅ z-ai-config موجود: ${cp}`);
+          found = true;
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  if (!found) {
+    for (const cp of configPaths) {
+      try {
         fs.mkdirSync(path.dirname(cp), { recursive: true });
         fs.writeFileSync(cp, configContent);
         console.log(`📝 أنشأت z-ai-config: ${cp}`);
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
   }
 }
 

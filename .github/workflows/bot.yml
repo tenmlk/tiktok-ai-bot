@@ -44,8 +44,8 @@ jobs:
 
       - name: Setup z-ai config (multiple locations)
         run: |
-          # z-ai-web-dev-sdk يتوقع ملف مش مجلد!
-          CONFIG_CONTENT='{"provider":"zai","apiKey":"default"}'
+          # v9.2: SDK يحتاج baseUrl + apiKey مش provider!
+          CONFIG_CONTENT='{"baseUrl":"https://internal-api.z.ai/v1","apiKey":"Z.ai"}'
           
           # 1. ملف في مجلد المشروع
           echo "$CONFIG_CONTENT" > .z-ai-config
@@ -56,7 +56,7 @@ jobs:
           # 3. ملف في /etc
           echo "$CONFIG_CONTENT" | sudo tee /etc/.z-ai-config > /dev/null
           
-          echo "✅ z-ai config created as FILES"
+          echo "✅ z-ai config created with correct format (baseUrl + apiKey)"
           echo "Contents:"
           cat .z-ai-config
 
