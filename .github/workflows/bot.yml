@@ -44,22 +44,21 @@ jobs:
 
       - name: Setup z-ai config (multiple locations)
         run: |
-          # إنشاء الكونفيج في عدة أماكن عشان z-ai-web-dev-sdk يلقاه
+          # z-ai-web-dev-sdk يتوقع ملف مش مجلد!
           CONFIG_CONTENT='{"provider":"zai","apiKey":"default"}'
           
-          # 1. مجلد البيت - مجلد + ملف كونفيج (الأهم)
-          mkdir -p $HOME/.z-ai-config
-          echo "$CONFIG_CONTENT" > $HOME/.z-ai-config/config.json
+          # 1. ملف في مجلد المشروع
+          echo "$CONFIG_CONTENT" > .z-ai-config
           
-          # 2. /etc
+          # 2. ملف في مجلد البيت
+          echo "$CONFIG_CONTENT" > $HOME/.z-ai-config
+          
+          # 3. ملف في /etc
           echo "$CONFIG_CONTENT" | sudo tee /etc/.z-ai-config > /dev/null
           
-          # 3. المجلد المحلي (المشروع) - مجلد + ملف كونفيج
-          mkdir -p .z-ai-config
-          echo "$CONFIG_CONTENT" > .z-ai-config/config.json
-          
-          echo "✅ z-ai config created"
-          cat $HOME/.z-ai-config/config.json
+          echo "✅ z-ai config created as FILES"
+          echo "Contents:"
+          cat .z-ai-config
 
       - name: Run TikTok Bot v8.0
         env:
