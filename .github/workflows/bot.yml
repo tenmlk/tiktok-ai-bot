@@ -42,11 +42,28 @@ jobs:
           npm init -y
           npm install z-ai-web-dev-sdk puppeteer puppeteer-extra puppeteer-extra-plugin-stealth dotenv
 
-      - name: Setup z-ai config
+      - name: Setup z-ai config (multiple locations)
         run: |
-          sudo mkdir -p /home/runner/.z-ai-config || true
-          echo '{"provider":"zai","apiKey":"default"}' | sudo tee /home/runner/.z-ai-config/config.json || true
-          sudo chmod -R 777 /home/runner/.z-ai-config || true
+          # إنشاء الكونفيج في عدة أماكن عشان z-ai-web-dev-sdk يلقاه
+          CONFIG_CONTENT='{"provider":"zai","apiKey":"default"}'
+          
+          # 1. المجلد المحلي (المشروع)
+          echo "$CONFIG_CONTENT" > .z-ai-config
+          
+          # 2. مجلد البيت
+          mkdir -p ~/.z-ai-config
+          echo "$CONFIG_CONTENT" > ~/.z-ai-config/config.json
+          echo "$CONFIG_CONTENT" > ~/.z-ai-config
+          
+          # 3. /etc
+          echo "$CONFIG_CONTENT" | sudo tee /etc/.z-ai-config
+          
+          # 4. مشروع فرعي
+          mkdir -p .z-ai-config
+          echo "$CONFIG_CONTENT" > .z-ai-config/config.json
+          
+          echo "✅ z-ai config created in multiple locations"
+          ls -la .z-ai-config ~/.z-ai-config/ /etc/.z-ai-config 2>/dev/null
 
       - name: Run TikTok Bot v8.0
         env:

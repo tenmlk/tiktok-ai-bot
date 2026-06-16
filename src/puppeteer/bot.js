@@ -1125,41 +1125,74 @@ class TikTokBot {
 
   /**
    * البحث عن تعليق المنشن والضغط على زر الرد
+   * v8.5: محسّن مع تحميل أفضل للتعليقات
    */
   async findAndClickReply(mention) {
     try {
+      // فتح قسم التعليقات إذا كان مغلق
+      const commentBtn = await this.page.$('[data-e2e="comment-button"]');
+      if (commentBtn) {
+        await commentBtn.click();
+        await this.randomDelay(3000, 5000);
+        console.log('✅ تم فتح قسم التعليقات');
+      }
+
       // تمرير لتحميل التعليقات
-      await this.page.evaluate(() => {
-        const commentSection = document.querySelector('[class*="comment"], [data-e2e="comment-list"]');
-        if (commentSection) {
-          commentSection.scrollTop = commentSection.scrollHeight;
-        }
-        window.scrollBy(0, 300);
-      });
-      await this.randomDelay(1000, 2000);
+      for (let i = 0; i < 3; i++) {
+        await this.page.evaluate(() => {
+          const container = document.querySelector('[class*="comment"]') || document.querySelector('[data-e2e="comment-list"]');
+          if (container) container.scrollTop = container.scrollHeight;
+          window.scrollBy(0, 500);
+        });
+        await this.randomDelay(1000, 2000);
+      }
+
+      await this.debugScreenshot('comments-section');
 
       // البحث عن التعليق اللي فيه منشن البوت
-      const replyClicked = await this.page.evaluate((botUsername, mentionerName) => {
-        const comments = document.querySelectorAll('[data-e2e="comment-level-1"], [class*="comment-item"], div[class*="CommentContent"]');
-        
-        for (const comment of comments) {
-          const text = comment.textContent || '';
-          
-          // تحقق إن التعليق فيه @botUsername ويفضل يكون من mentionerName
-          if (text.includes('@' + botUsername)) {
-            // دور زر الرد
-            const replyBtn = comment.querySelector('[data-e2e="reply-button"]') ||
-                           comment.querySelector('[class*="reply"]') ||
-                           comment.querySelector('span[class*="Reply"]');
+      const replyClicked = await this.page.evaluate((botUsername) => {
+        // كل التعليقات المحتملة
+        const commentSelectors = [
+          '[data-e2e="comment-level-1"]',
+          '[class*="comment-item"]', 
+          '[class*="CommentItem"]',
+          '[class*="CommentContent"]',
+          '[class*="comment-content"]',
+          'div[class*="comment"]'
+        ];
+
+        for (const selector of commentSelectors) {
+          const comments = document.querySelectorAll(selector);
+          for (const comment of comments) {
+            const text = comment.textContent || '';
             
-            if (replyBtn) {
-              replyBtn.click();
-              return { found: true, commentText: text.substring(0, 100) };
+            if (text.includes('@' + botUsername)) {
+              // دور زر الرد
+              const replyBtn = comment.querySelector('[data-e2e="reply-button"]') ||
+                             comment.querySelector('[class*="reply"]') ||
+                             comment.querySelector('[class*="Reply"]') ||
+                             comment.querySelector('span[class*="reply"]');
+              
+              if (replyBtn) {
+                replyBtn.click();
+                return { found: true, commentText: text.substring(0, 150) };
+              }
             }
           }
         }
+
+        // طريقة بديلة: دور كل أزرار الرد واضغط على اللي قريب من @botUsername
+        const allReplyBtns = document.querySelectorAll('[data-e2e="reply-button"]');
+        for (const btn of allReplyBtns) {
+          const parent = btn.closest('div');
+          if (parent && parent.textContent?.includes('@' + botUsername)) {
+            btn.click();
+            return { found: true, commentText: parent.textContent.substring(0, 150) };
+          }
+        }
+
         return { found: false };
-      }, CONFIG.username, mention.mentioner);
+      }, CONFIG.username);
 
       if (replyClicked.found) {
         console.log(`✅ وجدت التعليق وضغطت رد: "${replyClicked.commentText}"`);
@@ -1178,21 +1211,34 @@ class TikTokBot {
 
   /**
    * كتابة وإرسال الرد في خانة الرد
+   * v8.5: محسّن مع selectors أكثر
    */
   async writeAndSubmitReply(replyText) {
     try {
-      // البحث عن خانة الرد
-      const replyInput = await this.page.$(
-        'textarea[placeholder*="reply" i], ' +
-        'textarea[placeholder*="رد" i], ' +
-        'textarea[placeholder*="Add a reply" i], ' +
-        'div[contenteditable="true"][data-e2e="reply-input"], ' +
-        'textarea[class*="reply"], ' +
-        'textarea[class*="Reply"]'
-      );
+      // البحث عن خانة الرد - عدة محاولات
+      const replySelectors = [
+        'textarea[placeholder*="reply" i]',
+        'textarea[placeholder*="رد" i]',
+        'textarea[placeholder*="Add a reply" i]',
+        'div[contenteditable="true"]',
+        'textarea[class*="reply"]',
+        'textarea[class*="Reply"]',
+        '[data-e2e="reply-input"] textarea',
+        '[data-e2e="reply-input"]',
+        'textarea'
+      ];
+
+      let replyInput = null;
+      for (const selector of replySelectors) {
+        replyInput = await this.page.$(selector);
+        if (replyInput) {
+          console.log(`✅ وجدت خانة الرد: ${selector}`);
+          break;
+        }
+      }
 
       if (!replyInput) {
-        console.log('⚠️ لم أجد خانة الرد');
+        console.log('⚠️ لم أجد خانة الرد بكل السيلكتورات');
         await this.debugScreenshot('no-reply-input');
         return false;
       }
@@ -1206,17 +1252,28 @@ class TikTokBot {
       await this.randomDelay(500, 1000);
 
       // إرسال الرد
-      const submitBtn = await this.page.$(
-        '[data-e2e="comment-submit"], ' +
-        'button[type="submit"], ' +
-        '[class*="comment-post"], ' +
-        'button[data-e2e="reply-submit"]'
-      );
+      const submitSelectors = [
+        '[data-e2e="comment-submit"]',
+        'button[type="submit"]',
+        '[class*="comment-post"]',
+        '[data-e2e="reply-submit"]',
+        'button[class*="submit"]'
+      ];
 
-      if (submitBtn) {
-        await submitBtn.click();
-      } else {
+      let submitted = false;
+      for (const selector of submitSelectors) {
+        const btn = await this.page.$(selector);
+        if (btn) {
+          await btn.click();
+          submitted = true;
+          console.log(`✅ تم الضغط على زر الإرسال: ${selector}`);
+          break;
+        }
+      }
+
+      if (!submitted) {
         await this.page.keyboard.press('Enter');
+        console.log('✅ تم إرسال بالضغط على Enter');
       }
 
       await this.randomDelay(2000, 3000);
@@ -1232,6 +1289,7 @@ class TikTokBot {
 
   /**
    * نشر تعليق جديد (بديل إذا فشل الرد المباشر)
+   * v8.5: محسّن مع فتح قسم التعليقات
    */
   async postNewComment(videoUrl, comment) {
     try {
@@ -1241,29 +1299,39 @@ class TikTokBot {
       });
       await this.randomDelay(3000, 5000);
 
-      // فتح التعليقات
-      let commentInput = await this.page.$(
-        '[data-e2e="comment-input"] textarea, ' +
-        'textarea[placeholder], ' +
-        'div[contenteditable="true"], ' +
-        '[class*="comment-input"]'
-      );
+      // فتح قسم التعليقات
+      const commentBtn = await this.page.$('[data-e2e="comment-button"]');
+      if (commentBtn) {
+        await commentBtn.click();
+        await this.randomDelay(2000, 3000);
+        console.log('✅ تم فتح قسم التعليقات');
+      }
 
-      if (!commentInput) {
-        const commentButton = await this.page.$('[data-e2e="comment-button"], [class*="comment-icon"]');
-        if (commentButton) {
-          await commentButton.click();
-          await this.randomDelay(2000, 3000);
+      await this.debugScreenshot('comment-section');
+
+      // البحث عن خانة التعليق
+      const commentSelectors = [
+        '[data-e2e="comment-input"] textarea',
+        '[data-e2e="comment-input"]',
+        'textarea[placeholder*="comment" i]',
+        'textarea[placeholder*="تعليق" i]',
+        'textarea[placeholder*="Add a comment" i]',
+        'div[contenteditable="true"]',
+        'textarea[placeholder]',
+        'textarea'
+      ];
+
+      let commentInput = null;
+      for (const selector of commentSelectors) {
+        commentInput = await this.page.$(selector);
+        if (commentInput) {
+          console.log(`✅ وجدت خانة التعليق: ${selector}`);
+          break;
         }
-        commentInput = await this.page.$(
-          '[data-e2e="comment-input"] textarea, ' +
-          'textarea[placeholder], ' +
-          'div[contenteditable="true"]'
-        );
       }
 
       if (!commentInput) {
-        console.log('❌ لم أجد خانة التعليق');
+        console.log('❌ لم أجد خانة التعليق بكل السيلكتورات');
         await this.debugScreenshot('no-comment-input');
         return false;
       }
@@ -1274,15 +1342,23 @@ class TikTokBot {
       await this.page.keyboard.type(comment, { delay: 30 + Math.random() * 70 });
       await this.randomDelay(500, 1000);
 
-      const submitButton = await this.page.$(
-        '[data-e2e="comment-submit"], ' +
-        'button[type="submit"], ' +
+      const submitSelectors = [
+        '[data-e2e="comment-submit"]',
+        'button[type="submit"]',
         '[class*="comment-post"]'
-      );
+      ];
 
-      if (submitButton) {
-        await submitButton.click();
-      } else {
+      let submitted = false;
+      for (const selector of submitSelectors) {
+        const btn = await this.page.$(selector);
+        if (btn) {
+          await btn.click();
+          submitted = true;
+          break;
+        }
+      }
+
+      if (!submitted) {
         await this.page.keyboard.press('Enter');
       }
 
