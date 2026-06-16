@@ -566,7 +566,7 @@ class TikTokBot {
           if (editable) { editable.click(); return true; }
           // جرب الضغط على أي عنصر placeholder
           const placeholders = document.querySelectorAll('[class*="placeholder"], [class*="Placeholder"]');
-          for (const p of placeholders { if (p.textContent?.includes('comment') || p.textContent?.includes('رد')) { p.click(); return true; } }
+          for (const p of placeholders) { if (p.textContent?.includes('comment') || p.textContent?.includes('رد')) { p.click(); return true; } }
           return false;
         });
         if (activated) {
