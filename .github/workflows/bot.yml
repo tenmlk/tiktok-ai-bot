@@ -60,7 +60,7 @@ jobs:
           echo "Contents:"
           cat .z-ai-config
 
-      - name: Run TikTok Bot v9.0
+      - name: Run TikTok Bot v10.0
         env:
           TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
           TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
@@ -97,4 +97,4 @@ jobs:
 
       - name: Bot completed
         if: always()
-        run: echo "Bot v9.0 run completed at $(date)"
+        run: echo "Bot v10.0 run completed at $(date)"
