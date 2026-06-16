@@ -759,7 +759,7 @@ class TikTokBot {
 
   /**
    * الطريقة 2: مسح صفحة الإشعارات (محسّن)
-   * v8.4: فحص أعمق للعناصر
+   * v8.6: فحص أعمق + حفظ مرجع الإشعار للضغط عليه لاحقاً
    */
   async findMentionsInNotificationsPage() {
     console.log('🔔 الطريقة 2: مسح صفحة الإشعارات...');
@@ -772,28 +772,35 @@ class TikTokBot {
       });
       await this.randomDelay(3000, 5000);
       await this.debugScreenshot('notifications-page');
-      await this.debugHTML('notifications');
 
       const mentions = [];
 
       // استخراج كل الروابط والنصوص من الإشعارات
+      // وتخزين العناصر للضغط عليها لاحقاً
       const notifData = await this.page.evaluate((botUsername) => {
         const results = [];
         
-        // الطريقة 1: كل الروابط اللي فيها /video/
+        // كل الروابط اللي فيها /video/
         const allLinks = document.querySelectorAll('a[href*="/video/"]');
         for (const a of allLinks) {
           const text = a.textContent?.trim() || '';
           const href = a.href || '';
           const parentText = a.closest('div')?.textContent?.trim() || text;
+          
+          // هل هذا منشن؟
+          const isMention = text.includes('@' + botUsername) || 
+                           parentText.includes('mentioned you') || 
+                           parentText.includes('منشن') || parentText.includes('ذكر');
+          
           results.push({
             text: parentText.substring(0, 300),
             url: href,
-            type: 'video-link'
+            type: isMention ? 'mention-link' : 'video-link',
+            index: results.length
           });
         }
 
-        // الطريقة 2: كل عناصر الإشعار
+        // كل عناصر الإشعار
         const notifItems = document.querySelectorAll(
           '[data-e2e="inbox-notification"], [class*="notification"], [class*="Notification"], [class*="inbox-item"]'
         );
@@ -804,24 +811,9 @@ class TikTokBot {
             results.push({
               text: text.substring(0, 300),
               url: link,
-              type: 'notification-item'
+              type: text.includes('mentioned') ? 'mention-notification' : 'notification-item',
+              index: results.length
             });
-          }
-        }
-
-        // الطريقة 3: فحص كل النصوص اللي فيها @botUsername
-        const allElements = document.querySelectorAll('span, p, div');
-        for (const el of allElements) {
-          if (el.children.length === 0 || el.children.length === 1) {
-            const text = el.textContent?.trim() || '';
-            if (text.includes('@' + botUsername) && text.length < 200) {
-              const link = el.closest('a')?.href || '';
-              results.push({
-                text: text.substring(0, 200),
-                url: link,
-                type: 'mention-text'
-              });
-            }
           }
         }
 
@@ -835,7 +827,8 @@ class TikTokBot {
 
       // فلترة المنشنات
       for (const item of notifData) {
-        if (item.text.includes('@' + CONFIG.username) || 
+        if (item.type === 'mention-link' || item.type === 'mention-notification' ||
+            item.text.includes('@' + CONFIG.username) || 
             item.text.toLowerCase().includes('mention') || 
             item.text.includes('منشن') || item.text.includes('ذكر')) {
           const mentionId = item.url || item.text.slice(0, 50);
@@ -847,13 +840,18 @@ class TikTokBot {
               mentioner: mentioner,
               videoUrl: item.url,
               id: mentionId,
-              source: 'notifications-page'
+              source: 'notifications-page',
+              notifIndex: item.index
             });
           }
         }
       }
 
       console.log(`🔔 إشعارات: وجد ${mentions.length} منشن جديد`);
+      
+      // حفظ URL الإشعارات للضغط لاحقاً
+      this._notificationsPageUrl = this.page.url();
+      
       return mentions;
 
     } catch (error) {
@@ -1067,58 +1065,167 @@ class TikTokBot {
   // ===================================
 
   /**
-   * الرد على تعليق المنشن مباشرة (مش تعليق جديد)
-   * يفتح الفيديو، يدور التعليق اللي فيه المنشن، يضغط رد، ويكتب
+   * الرد على تعليق المنشن
+   * v8.6: الضغط على الإشعار بدل التنقل المباشر (لتجنب 403)
    */
   async replyToMention(mention) {
     console.log(`\n💬 الرد على @${mention.mentioner}...`);
 
     try {
-      // فتح الفيديو
-      await this.page.goto(mention.videoUrl, {
-        waitUntil: 'networkidle2',
-        timeout: 60000
-      });
-      await this.randomDelay(3000, 5000);
-      await this.debugScreenshot('video-page');
-
-      // فتح قسم التعليقات
-      const commentBtn = await this.page.$('[data-e2e="comment-button"], [class*="comment-icon"]');
-      if (commentBtn) {
-        await commentBtn.click();
+      // v8.6: إذا المنشن من صفحة الإشعارات، نرجع للإشعارات ونضغط على الرابط
+      // هذا يمنع HTTP 403 من تيك توك
+      if (mention.source === 'notifications-page' && mention.videoUrl) {
+        console.log('🔗 الرجوع لصفحة الإشعارات والضغط على الرابط...');
+        
+        // الرجوع لصفحة الإشعارات
+        await this.page.goto('https://www.tiktok.com/inbox?is_from_webapp=1&webapp_id=1988', {
+          waitUntil: 'networkidle2',
+          timeout: 60000
+        });
         await this.randomDelay(2000, 3000);
-      }
 
-      // البحث عن تعليق المنشن والضغط على "رد"
-      const foundAndClickedReply = await this.findAndClickReply(mention);
-      
-      if (foundAndClickedReply) {
-        // كتابة الرد
-        const reply = await createAIResponse(mention.text, '', mention.mentioner);
-        console.log(`💬 الرد: "${reply}"`);
+        // الضغط على رابط الإشعار اللي فيه المنشن
+        const clicked = await this.clickNotificationLink(mention);
+        if (clicked) {
+          await this.randomDelay(3000, 5000);
+          await this.debugScreenshot('video-from-notification');
+          
+          // فحص هل الصفحة تحملت بنجاح
+          const pageStatus = await this.page.evaluate(() => {
+            return {
+              is403: document.title?.includes('403') || document.body?.textContent?.includes('ERROR 403'),
+              isVideo: !!document.querySelector('video') || !!document.querySelector('[data-e2e="browse-video"]'),
+              title: document.title?.substring(0, 50)
+            };
+          });
 
-        const submitted = await this.writeAndSubmitReply(reply);
-        if (submitted) {
-          CONFIG.repliedMentions.add(mention.id);
-          console.log('✅ تم نشر الرد! 🎉');
-          return true;
+          console.log(`📋 حالة الصفحة: title="${pageStatus.title}", is403=${pageStatus.is403}, isVideo=${pageStatus.isVideo}`);
+
+          if (pageStatus.is403) {
+            console.log('⚠️ صفحة 403 - جرب mobile web...');
+            // جرب نسخة الموبايل
+            await this.page.goto(mention.videoUrl.replace('www.tiktok.com', 'm.tiktok.com'), {
+              waitUntil: 'networkidle2',
+              timeout: 60000
+            });
+            await this.randomDelay(3000, 5000);
+          }
+
+          if (pageStatus.isVideo || !pageStatus.is403) {
+            // محاولة الرد المباشر
+            const foundAndClickedReply = await this.findAndClickReply(mention);
+            
+            if (foundAndClickedReply) {
+              const reply = await createAIResponse(mention.text, '', mention.mentioner);
+              console.log(`💬 الرد: "${reply}"`);
+              const submitted = await this.writeAndSubmitReply(reply);
+              if (submitted) {
+                CONFIG.repliedMentions.add(mention.id);
+                console.log('✅ تم نشر الرد! 🎉');
+                return true;
+              }
+            }
+
+            // إذا فشل الرد المباشر، جرب تعليق جديد
+            console.log('⚠️ فشل الرد المباشر - جرب تعليق جديد...');
+            const reply = await createAIResponse(mention.text, '', mention.mentioner);
+            const posted = await this.postNewComment(null, reply);
+            if (posted) {
+              CONFIG.repliedMentions.add(mention.id);
+              console.log('✅ تم نشر تعليق جديد! 🎉');
+              return true;
+            }
+          }
         }
       }
 
-      // إذا فشل الرد المباشر، جرب تعليق جديد
-      console.log('⚠️ فشل الرد المباشر - جرب تعليق جديد...');
-      const reply = await createAIResponse(mention.text, '', mention.mentioner);
-      const posted = await this.postNewComment(mention.videoUrl, reply);
-      if (posted) {
-        CONFIG.repliedMentions.add(mention.id);
-        console.log('✅ تم نشر تعليق جديد! 🎉');
-        return true;
+      // الطريقة القديمة: التنقل المباشر (fallback)
+      if (mention.videoUrl) {
+        console.log(`🔗 التنقل المباشر للفيديو: ${mention.videoUrl}`);
+        await this.page.goto(mention.videoUrl, {
+          waitUntil: 'networkidle2',
+          timeout: 60000
+        });
+        await this.randomDelay(3000, 5000);
+        await this.debugScreenshot('video-direct');
+
+        // فحص 403
+        const is403 = await this.page.evaluate(() => 
+          document.title?.includes('403') || document.body?.textContent?.includes('ERROR 403')
+        );
+        if (is403) {
+          console.log('❌ HTTP 403 - تم حظر الوصول');
+          return false;
+        }
+
+        const foundAndClickedReply = await this.findAndClickReply(mention);
+        if (foundAndClickedReply) {
+          const reply = await createAIResponse(mention.text, '', mention.mentioner);
+          const submitted = await this.writeAndSubmitReply(reply);
+          if (submitted) {
+            CONFIG.repliedMentions.add(mention.id);
+            console.log('✅ تم نشر الرد! 🎉');
+            return true;
+          }
+        }
+
+        const reply = await createAIResponse(mention.text, '', mention.mentioner);
+        const posted = await this.postNewComment(null, reply);
+        if (posted) {
+          CONFIG.repliedMentions.add(mention.id);
+          console.log('✅ تم نشر تعليق جديد! 🎉');
+          return true;
+        }
       }
 
       return false;
 
     } catch (error) {
       console.error('❌ خطأ في الرد:', error.message);
+      return false;
+    }
+  }
+
+  /**
+   * الضغط على رابط إشعار المنشن في صفحة الإشعارات
+   */
+  async clickNotificationLink(mention) {
+    try {
+      // البحث عن رابط الإشعار والضغط عليه
+      const clicked = await this.page.evaluate((videoUrl) => {
+        // دور الرابط اللي يطابق URL الفيديو
+        const allLinks = document.querySelectorAll('a[href*="/video/"]');
+        for (const a of allLinks) {
+          if (a.href === videoUrl || a.href.includes(videoUrl.split('/video/')[1]?.split('?')[0])) {
+            a.click();
+            return true;
+          }
+        }
+        
+        // إذا ما لقيناه، جرب الضغط على أول رابط فيه "mentioned"
+        const allAnchors = document.querySelectorAll('a');
+        for (const a of allAnchors) {
+          const text = a.textContent || '';
+          if (text.includes('mentioned') || text.includes('منشن')) {
+            a.click();
+            return true;
+          }
+        }
+        
+        return false;
+      }, mention.videoUrl);
+
+      if (clicked) {
+        console.log('✅ تم الضغط على رابط الإشعار');
+        await this.randomDelay(2000, 3000);
+        return true;
+      }
+
+      console.log('⚠️ لم أجد رابط الإشعار للضغط');
+      return false;
+
+    } catch (error) {
+      console.error('❌ خطأ في الضغط على الإشعار:', error.message);
       return false;
     }
   }
