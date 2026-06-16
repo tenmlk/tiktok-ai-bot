@@ -251,7 +251,7 @@ class TikTokBot {
 
   /**
    * تسجيل الدخول بالكوكيز (الطريقة الأفضل)
-   * v8.0: إصلاح httpOnly cookies
+   * v8.3: مبسّط - إذا الكوكيز موجودة نعتبر مسجل
    */
   async loginWithCookies() {
     if (!CONFIG.sessionCookie) {
@@ -264,7 +264,7 @@ class TikTokBot {
     try {
       // فتح تيك توك أولاً
       await this.page.goto('https://www.tiktok.com', {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'networkidle2',
         timeout: 60000
       });
       await this.randomDelay(2000, 3000);
@@ -309,8 +309,18 @@ class TikTokBot {
       });
       await this.randomDelay(3000, 5000);
 
-      await this.debugScreenshot('after-cookie-login');
+      // فحص سريع - هل الكوكيز فعّالة؟
+      const hasSessionCookies = cookies.some(c => 
+        ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_tt_ss', 'd_ticket'].includes(c.name)
+      );
 
+      if (hasSessionCookies) {
+        this.isLoggedIn = true;
+        console.log('✅ كوكيز الجلسة موجودة - مسجل الدخول! 🎉');
+        return true;
+      }
+
+      // إذا ما عندنا كوكيز جلسة، تحقق من الصفحة
       const loggedIn = await this.checkIfLoggedIn();
       if (loggedIn) {
         this.isLoggedIn = true;
@@ -322,6 +332,12 @@ class TikTokBot {
       return false;
     } catch (error) {
       console.error('❌ خطأ في تسجيل الدخول بالكوكيز:', error.message);
+      // إذا عندنا كوكيز session، نعتبر مسجل
+      if (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt')) {
+        this.isLoggedIn = true;
+        console.log('⚠️ خطأ لكن الكوكيز موجودة - أعتبر مسجل الدخول');
+        return true;
+      }
       return false;
     }
   }
@@ -553,21 +569,23 @@ class TikTokBot {
     console.log('📡 الطريقة 1: جلب المنشنات عبر API...');
 
     try {
-      // دائماً اروح للصفحة الرئيسية أولاً - مهم عشان API يشتغل!
+      // دائماً اروح للصفحة الرئيسية أولاً
       await this.page.goto('https://www.tiktok.com', {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
+        waitUntil: 'networkidle2',
+        timeout: 60000
       });
-      await this.randomDelay(2000, 3000);
+      await this.randomDelay(3000, 5000);
 
       const mentions = [];
 
       // جرب group=2 (منشنات) و group=3 (تعليقات)
       for (const group of [2, 3]) {
         try {
+          // الطريقة A: fetch
           const result = await this.page.evaluate(async (groupNum) => {
             try {
-              const response = await fetch(`/api/inbox/notice_list/?group=${groupNum}&count=20`, {
+              // الطريقة 1: fetch
+              const response = await fetch(`https://www.tiktok.com/api/inbox/notice_list/?group=${groupNum}&count=20`, {
                 credentials: 'include',
                 headers: {
                   'Accept': 'application/json'
@@ -575,39 +593,65 @@ class TikTokBot {
               });
 
               if (!response.ok) {
-                return { error: `HTTP ${response.status}`, status: response.status };
+                return { error: `fetch HTTP ${response.status}`, method: 'fetch' };
               }
 
               const text = await response.text();
 
-              // TikTok يضيف بادئة XSSI أحياناً
               let jsonText = text;
               if (text.startsWith('while(1)') || text.startsWith('for(;;)')) {
                 jsonText = text.substring(text.indexOf('{'));
               }
-              // إزالة أي بادئة غريبة
               const firstBrace = jsonText.indexOf('{');
               if (firstBrace > 0) {
                 jsonText = jsonText.substring(firstBrace);
               }
 
               const data = JSON.parse(jsonText);
-              return { data, group: groupNum, rawKeys: Object.keys(data) };
-            } catch (e) {
-              return { error: e.message };
+              return { data, group: groupNum, rawKeys: Object.keys(data), method: 'fetch' };
+            } catch (fetchErr) {
+              // الطريقة 2: XMLHttpRequest
+              try {
+                return await new Promise((resolve) => {
+                  const xhr = new XMLHttpRequest();
+                  xhr.open('GET', `https://www.tiktok.com/api/inbox/notice_list/?group=${groupNum}&count=20`, true);
+                  xhr.withCredentials = true;
+                  xhr.setRequestHeader('Accept', 'application/json');
+                  xhr.onload = function() {
+                    try {
+                      let text = xhr.responseText;
+                      if (text.startsWith('while(1)') || text.startsWith('for(;;)')) {
+                        text = text.substring(text.indexOf('{'));
+                      }
+                      const fb = text.indexOf('{');
+                      if (fb > 0) text = text.substring(fb);
+                      const data = JSON.parse(text);
+                      resolve({ data, group: groupNum, rawKeys: Object.keys(data), method: 'xhr' });
+                    } catch (e) {
+                      resolve({ error: `xhr parse: ${e.message}`, method: 'xhr' });
+                    }
+                  };
+                  xhr.onerror = function() {
+                    resolve({ error: `xhr error: ${xhr.status}`, method: 'xhr' });
+                  };
+                  xhr.send();
+                });
+              } catch (xhrErr) {
+                return { error: `fetch: ${fetchErr.message}, xhr: ${xhrErr.message}`, method: 'both' };
+              }
             }
           }, group);
 
           if (result.error) {
-            console.log(`⚠️ API group=${group} خطأ: ${result.error}`);
+            console.log(`⚠️ API group=${group} خطأ (${result.method}): ${result.error}`);
             continue;
           }
 
           if (result.data) {
-            console.log(`✅ API group=${group} رجع بيانات! Keys: ${result.rawKeys?.join(', ')}`);
+            console.log(`✅ API group=${group} رجع بيانات! (${result.method}) Keys: ${result.rawKeys?.join(', ')}`);
 
             // تسجيل هيكل البيانات للتصحيح
-            const dataStr = JSON.stringify(result.data).substring(0, 500);
+            const dataStr = JSON.stringify(result.data).substring(0, 800);
             console.log(`📋 API raw preview: ${dataStr}`);
 
             // محاولة استخراج القائمة بعدة طرق
