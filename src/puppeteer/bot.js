@@ -553,8 +553,17 @@ class TikTokBot {
     return unique;
   }
 
+  // v10.2: احصل على msToken من الكوكيز
+  async getMsToken() {
+    try {
+      const cookies = await this.page.cookies();
+      const msToken = cookies.find(c => c.name === 'msToken')?.value || '';
+      return msToken;
+    } catch (e) { return ''; }
+  }
+
   // ===================================
-  // v10.0: الرد عبر API (بدون فتح صفحة فيديو!)
+  // v10.1: الرد عبر API (بدون فتح صفحة فيديو!)
   // هذا هو التغيير الرئيسي - لا كابتشا!
   // ===================================
 
@@ -562,17 +571,20 @@ class TikTokBot {
     console.log(`\n💬 ═══════════════════════════════`);
     console.log(`💬 الرد على @${mention.mentioner}...`);
     console.log(`💬 "${mention.text.substring(0, 80)}..."`);
+    console.log(`💬 videoId=${mention.videoId} commentId=${mention.commentId}`);
 
     try {
       // توليد الرد
       const replyText = await createAIResponse(mention.text, '', mention.mentioner);
       console.log(`💬 الرد: "${replyText}"`);
 
-      // v10.0: حاول 3 طرق للرد
+      // الحصول على msToken
+      const msToken = await this.getMsToken();
+      console.log(`🔑 msToken: ${msToken ? msToken.substring(0, 20) + '...' : 'غير موجود'}`);
 
       // الطريقة 1: API تعليق مباشر (أفضل طريقة - بدون فتح صفحة!)
       if (mention.videoId) {
-        const posted = await this.replyViaAPI(mention, replyText);
+        const posted = await this.replyViaAPI(mention, replyText, msToken);
         if (posted) {
           CONFIG.repliedMentions.add(mention.id);
           console.log('✅ تم نشر الرد عبر API! 🎉');
@@ -582,7 +594,7 @@ class TikTokBot {
 
       // الطريقة 2: API تعليق جديد على الفيديو
       if (mention.videoId) {
-        const posted = await this.commentViaAPI(mention, replyText);
+        const posted = await this.commentViaAPI(mention, replyText, msToken);
         if (posted) {
           CONFIG.repliedMentions.add(mention.id);
           console.log('✅ تم نشر تعليق جديد عبر API! 🎉');
@@ -607,15 +619,14 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.1: رد عبر API تعليق
+  // v10.2: رد عبر API تعليق (مع msToken + CSRF)
   // POST /api/comment/create/reply/
   // ===================================
-  async replyViaAPI(mention, replyText) {
+  async replyViaAPI(mention, replyText, msToken) {
     console.log('📡 الطريقة 1: رد عبر API...');
     try {
       const result = await this.page.evaluate(async (data) => {
         try {
-          // v10.1: رد على تعليق محدد
           if (data.commentId && data.videoId) {
             const params = new URLSearchParams({
               aid: '1988',
@@ -623,7 +634,8 @@ class TikTokBot {
               app_name: 'tiktok_web',
               item_id: data.videoId,
               comment_id: data.commentId,
-              content: data.replyText
+              content: data.replyText,
+              msToken: data.msToken
             });
             
             const resp = await fetch('https://www.tiktok.com/api/comment/create/reply/?' + params.toString(), {
@@ -633,7 +645,9 @@ class TikTokBot {
                 'Accept': 'application/json',
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'Referer': `https://www.tiktok.com/@/video/${data.videoId}`,
-                'Origin': 'https://www.tiktok.com'
+                'Origin': 'https://www.tiktok.com',
+                'x-secsdk-csrf-request': '1',
+                'x-secsdk-csrf-version': '1.2.5'
               }
             });
             
@@ -642,7 +656,7 @@ class TikTokBot {
           }
           return { status: 0, body: `no commentId or videoId (videoId=${data.videoId}, commentId=${data.commentId})`, method: 'reply' };
         } catch (e) { return { error: e.message, method: 'reply' }; }
-      }, { videoId: mention.videoId, commentId: mention.commentId, replyText });
+      }, { videoId: mention.videoId, commentId: mention.commentId, replyText, msToken });
 
       if (result.error) {
         console.log(`⚠️ API رد: ${result.error}`);
@@ -664,10 +678,10 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.1: تعليق جديد عبر API
+  // v10.2: تعليق جديد عبر API (مع msToken + CSRF)
   // POST /api/comment/create/
   // ===================================
-  async commentViaAPI(mention, replyText) {
+  async commentViaAPI(mention, replyText, msToken) {
     console.log('📡 الطريقة 2: تعليق جديد عبر API...');
     if (!mention.videoId) {
       console.log('⚠️ لا يوجد videoId - لا أستطيع التعليق عبر API');
@@ -681,7 +695,8 @@ class TikTokBot {
             app_language: 'ar',
             app_name: 'tiktok_web',
             item_id: data.videoId,
-            content: data.replyText
+            content: data.replyText,
+            msToken: data.msToken
           });
 
           const resp = await fetch('https://www.tiktok.com/api/comment/create/?' + params.toString(), {
@@ -691,14 +706,16 @@ class TikTokBot {
               'Accept': 'application/json',
               'Content-Type': 'application/x-www-form-urlencoded',
               'Referer': `https://www.tiktok.com/@/video/${data.videoId}`,
-              'Origin': 'https://www.tiktok.com'
+              'Origin': 'https://www.tiktok.com',
+              'x-secsdk-csrf-request': '1',
+              'x-secsdk-csrf-version': '1.2.5'
             }
           });
 
           const text = await resp.text();
           return { status: resp.status, body: text.substring(0, 500), method: 'comment', videoId: data.videoId };
         } catch (e) { return { error: e.message, method: 'comment' }; }
-      }, { videoId: mention.videoId, replyText });
+      }, { videoId: mention.videoId, replyText, msToken });
 
       if (result.error) {
         console.log(`⚠️ API تعليق: ${result.error}`);
@@ -713,11 +730,6 @@ class TikTokBot {
             }
             console.log(`⚠️ API status_code=${json.status_code} status_msg=${json.status_msg}`);
           } catch (e) {}
-          // إذا ما فهمنا الرد لكن ما فيه error، اعتبره نجاح محتمل
-          if (result.body && !result.body.includes('"status_code":8') && !result.body.includes('blocked')) {
-            console.log('⚠️ نتيجة غير واضحة - قد يكون نجاح');
-            return true;
-          }
         }
       }
     } catch (e) { console.log(`⚠️ خطأ API تعليق: ${e.message}`); }
@@ -956,8 +968,8 @@ async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║      🤖 بوت تيك توك الذكي v10.1         ║
-║      API Intercept + Smart Reply         ║
+║      🤖 بوت تيك توك الذكي v10.2         ║
+║      API + msToken + CSRF               ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
   `);
