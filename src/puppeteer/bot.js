@@ -492,6 +492,9 @@ class TikTokBot {
       await this.page.goto(mention.videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
       await this.randomDelay(3000, 5000);
 
+      // v9.3: حل الكابتشا إذا ظهرت
+      await this.solveCaptcha();
+
       const is403 = await this.page.evaluate(() => document.title?.includes('403'));
       if (is403) {
         console.log('⚠️ 403 - جرب mobile...');
@@ -499,6 +502,7 @@ class TikTokBot {
         if (CONFIG.sessionCookie) await this.page.setCookie(...this.parseCookies(CONFIG.sessionCookie));
         await this.page.goto(mention.videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await this.randomDelay(3000, 5000);
+        await this.solveCaptcha();
       }
 
       await this.debugScreenshot('video-page');
@@ -674,6 +678,110 @@ class TikTokBot {
 
   async randomDelay(min = 1000, max = 3000) {
     return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
+  }
+
+  // v9.3: حل كابتشا تيك توك (slider puzzle)
+  async solveCaptcha() {
+    try {
+      // فحص هل الكابتشا موجودة
+      const hasCaptcha = await this.page.evaluate(() => {
+        // كابتشا تيك توك: slider puzzle
+        const sliderText = document.body?.textContent || '';
+        const hasSlider = !!document.querySelector('[class*="captcha-slider"]') ||
+                         !!document.querySelector('[class*="verify"]') ||
+                         !!document.querySelector('iframe[src*="captcha"]') ||
+                         !!document.querySelector('[class*="Captcha"]') ||
+                         sliderText.includes('اسحب') || sliderText.includes('محرك') ||
+                         sliderText.includes('slider') || sliderText.includes('puzzle') ||
+                         sliderText.includes('لغز') || sliderText.includes('تحقق');
+        return hasSlider;
+      });
+
+      if (!hasCaptcha) return false;
+
+      console.log('🤖 اكتشفت كابتشا! محاولة الحل...');
+      await this.debugScreenshot('captcha-detected');
+
+      // محاولة 1: ابحث عن الـ slider واسحبه
+      const sliderSelectors = [
+        '[class*="captcha-slider"]',
+        '[class*="slider-btn"]',
+        '[class*="drag"]',
+        '[class*="Drag"]',
+        '[class*="handler"]',
+        '[class*="Handler"]',
+        'div[role="slider"]',
+        'button[class*="slide"]'
+      ];
+
+      for (const selector of sliderSelectors) {
+        const slider = await this.page.$(selector);
+        if (slider) {
+          const box = await slider.boundingBox();
+          if (box) {
+            console.log(`🤖 وجدت slider: ${selector} at (${box.x}, ${box.y})`);
+            
+            // حركة سحب طبيعية - سحب تدريجي
+            const startX = box.x + box.width / 2;
+            const startY = box.y + box.height / 2;
+            const targetX = startX + 250 + Math.random() * 50; // مسافة مختلفة كل مرة
+            
+            await this.page.mouse.move(startX, startY);
+            await this.randomDelay(300, 600);
+            await this.page.mouse.down();
+            await this.randomDelay(200, 400);
+            
+            // سحب تدريجي (خطوات صغيرة)
+            const steps = 15 + Math.floor(Math.random() * 10);
+            const dx = (targetX - startX) / steps;
+            for (let i = 1; i <= steps; i++) {
+              const x = startX + dx * i;
+              const y = startY + (Math.random() - 0.5) * 4; // اهتزاز طبيعي
+              await this.page.mouse.move(x, y);
+              await this.randomDelay(20, 50);
+            }
+            
+            await this.randomDelay(200, 400);
+            await this.page.mouse.up();
+            await this.randomDelay(3000, 5000);
+            
+            await this.debugScreenshot('captcha-after-slider');
+            console.log('🤖 تم سحب الـ slider');
+
+            // فحص هل الكابتشا انحلت
+            const stillCaptcha = await this.page.evaluate(() => {
+              const text = document.body?.textContent || '';
+              return text.includes('اسحب') || text.includes('slider') || text.includes('لغز') ||
+                     !!document.querySelector('[class*="captcha"]');
+            });
+
+            if (!stillCaptcha) {
+              console.log('✅ الكابتشا انحلت!');
+              return true;
+            } else {
+              console.log('⚠️ الكابتشا لسه موجودة - جرب مرة ثانية');
+            }
+          }
+        }
+      }
+
+      // محاولة 2: اضغط على أي مكان في الكابتشا (للكابتشا اللي تحتاج ضغطة)
+      const captchaFrame = await this.page.$('iframe[src*="captcha"]');
+      if (captchaFrame) {
+        console.log('🤖 وجدت iframe كابتشا');
+        const frame = await captchaFrame.contentFrame();
+        if (frame) {
+          const btn = await frame.$('button, [class*="verify"]');
+          if (btn) { await btn.click(); await this.randomDelay(2000, 3000); }
+        }
+      }
+
+      await this.randomDelay(2000, 3000);
+      return false;
+    } catch (e) {
+      console.log(`⚠️ خطأ في حل الكابتشا: ${e.message}`);
+      return false;
+    }
   }
 
   async close() {
