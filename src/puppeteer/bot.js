@@ -557,13 +557,24 @@ class TikTokBot {
   }
 
   // ===================================
-  // جلب المنشنات - 3 طرق
+  // جلب المنشنات - 3 طرق + مساعدات
   // ===================================
 
   /**
-   * الطريقة 1: جلب المنشنات عبر API (الأقوى)
-   * v8.0: استخدام page.evaluate(fetch()) مع credentials: 'include'
-   * هذا يضمن إن الكوكيز (حتى httpOnly) ترسل مع الطلب
+   * الحصول على msToken من الكوكيز
+   */
+  async getMSToken() {
+    try {
+      const cookies = await this.page.cookies();
+      const msToken = cookies.find(c => c.name === 'msToken');
+      return msToken ? msToken.value : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * الطريقة 1: جلب المنشنات عبر API (مع msToken)
    */
   async fetchMentionsViaAPI() {
     console.log('📡 الطريقة 1: جلب المنشنات عبر API...');
@@ -747,75 +758,98 @@ class TikTokBot {
   }
 
   /**
-   * الطريقة 2: مسح صفحة الإشعارات
+   * الطريقة 2: مسح صفحة الإشعارات (محسّن)
+   * v8.4: فحص أعمق للعناصر
    */
   async findMentionsInNotificationsPage() {
     console.log('🔔 الطريقة 2: مسح صفحة الإشعارات...');
 
     try {
-      await this.page.goto('https://www.tiktok.com/notifications', {
+      // جرب رابط الإشعارات المباشر
+      await this.page.goto('https://www.tiktok.com/inbox?is_from_webapp=1&webapp_id=1988', {
         waitUntil: 'networkidle2',
         timeout: 60000
       });
       await this.randomDelay(3000, 5000);
       await this.debugScreenshot('notifications-page');
-
-      // محاولة الضغط على تبويب المنشنات
-      try {
-        const mentionTab = await this.page.$('[data-e2e="mention-tab"]') ||
-                           await this.page.$('div[class*="mention"]') ||
-                           await this.page.evaluateHandle(() => {
-                             const tabs = document.querySelectorAll('div[class*="tab"], span[class*="tab"]');
-                             for (const tab of tabs) {
-                               if (tab.textContent.includes('Mention') || tab.textContent.includes('منشن')) {
-                                 return tab;
-                               }
-                             }
-                             return null;
-                           });
-        if (mentionTab) {
-          await mentionTab.click();
-          await this.randomDelay(2000, 3000);
-          console.log('✅ تم الضغط على تبويب المنشنات');
-        }
-      } catch (e) {}
+      await this.debugHTML('notifications');
 
       const mentions = [];
 
-      // البحث عن روابط الفيديوهات في الإشعارات
-      const notificationLinks = await this.page.evaluate((botUsername) => {
-        const links = [];
-        const anchors = document.querySelectorAll('a[href*="/video/"], a[href*="/v/"]');
+      // استخراج كل الروابط والنصوص من الإشعارات
+      const notifData = await this.page.evaluate((botUsername) => {
+        const results = [];
         
-        for (const a of anchors) {
-          const text = a.textContent || '';
+        // الطريقة 1: كل الروابط اللي فيها /video/
+        const allLinks = document.querySelectorAll('a[href*="/video/"]');
+        for (const a of allLinks) {
+          const text = a.textContent?.trim() || '';
           const href = a.href || '';
-          
-          if (text.includes('@' + botUsername) || text.includes('mentioned') || text.includes('منشن') || text.includes('ذكر')) {
-            links.push({
-              text: text.trim().substring(0, 200),
-              url: href
+          const parentText = a.closest('div')?.textContent?.trim() || text;
+          results.push({
+            text: parentText.substring(0, 300),
+            url: href,
+            type: 'video-link'
+          });
+        }
+
+        // الطريقة 2: كل عناصر الإشعار
+        const notifItems = document.querySelectorAll(
+          '[data-e2e="inbox-notification"], [class*="notification"], [class*="Notification"], [class*="inbox-item"]'
+        );
+        for (const item of notifItems) {
+          const text = item.textContent?.trim() || '';
+          const link = item.querySelector('a')?.href || '';
+          if (text.length > 5) {
+            results.push({
+              text: text.substring(0, 300),
+              url: link,
+              type: 'notification-item'
             });
           }
         }
-        
-        return links;
+
+        // الطريقة 3: فحص كل النصوص اللي فيها @botUsername
+        const allElements = document.querySelectorAll('span, p, div');
+        for (const el of allElements) {
+          if (el.children.length === 0 || el.children.length === 1) {
+            const text = el.textContent?.trim() || '';
+            if (text.includes('@' + botUsername) && text.length < 200) {
+              const link = el.closest('a')?.href || '';
+              results.push({
+                text: text.substring(0, 200),
+                url: link,
+                type: 'mention-text'
+              });
+            }
+          }
+        }
+
+        return results;
       }, CONFIG.username);
 
-      for (const link of notificationLinks) {
-        const mentionId = link.url || link.text.slice(0, 50);
-        if (!CONFIG.repliedMentions.has(mentionId)) {
-          // استخراج اسم المستخدم من النص
-          const usernameMatch = link.text.match(/@(\w+)/);
-          const mentioner = usernameMatch ? usernameMatch[1] : 'user';
+      console.log(`🔔 وجد ${notifData.length} عنصر في صفحة الإشعارات`);
+      for (const item of notifData.slice(0, 10)) {
+        console.log(`   📋 ${item.type}: "${item.text.substring(0, 60)}..." → ${item.url.substring(0, 60)}`);
+      }
 
-          mentions.push({
-            text: link.text,
-            mentioner: mentioner !== CONFIG.username ? mentioner : 'user',
-            videoUrl: link.url,
-            id: mentionId,
-            source: 'notifications-page'
-          });
+      // فلترة المنشنات
+      for (const item of notifData) {
+        if (item.text.includes('@' + CONFIG.username) || 
+            item.text.toLowerCase().includes('mention') || 
+            item.text.includes('منشن') || item.text.includes('ذكر')) {
+          const mentionId = item.url || item.text.slice(0, 50);
+          if (!CONFIG.repliedMentions.has(mentionId) && item.url) {
+            const usernameMatch = item.text.match(/@(\w+)/);
+            const mentioner = usernameMatch && usernameMatch[1] !== CONFIG.username ? usernameMatch[1] : 'user';
+            mentions.push({
+              text: item.text,
+              mentioner: mentioner,
+              videoUrl: item.url,
+              id: mentionId,
+              source: 'notifications-page'
+            });
+          }
         }
       }
 
