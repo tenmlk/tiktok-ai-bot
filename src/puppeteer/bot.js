@@ -1,15 +1,16 @@
 /**
  * ===================================
- * بوت تيك توك الذكي - v8.0 Stealth API
+ * بوت تيك توك الذكي - v9.0 Anti-Detect
  * ===================================
  * 
- * ابتكارات v8.0:
- * - جلب المنشنات عبر API مع credentials: 'include' (الكوكيز ترسل تلقائياً)
- * - مسح صفحة الإشعارات كطريقة بديلة
- * - مسح فيديوهات البوت كطريقة احتياطية
- * - إصلاح مشكلة httpOnly cookies
- * - رد مباشر على تعليق المنشن (مش تعليق جديد)
- * - لقطات شاشة للتصحيح
+ * ابتكارات v9.0:
+ * - إصلاح HTTP 403: تعيين كوكيز قبل فتح أي صفحة
+ * - إصلاح 404: روابط صحيحة للإشعارات
+ * - اعتراض طلبات الشبكة لمعرفة API الصحيح
+ * - تشغيل JavaScript المطلوب قبل التحميل
+ * - تسجيل دخول تلقائي بالباسورد كـ fallback
+ * - أفضل إخفاء البوت (navigator, chrome object, etc.)
+ * - استخدام page.setCookie قبل goTo (السر الأساسي!)
  */
 
 import puppeteerExtra from 'puppeteer-extra';
@@ -17,12 +18,7 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import ZAI from 'z-ai-web-dev-sdk';
 import { checkContentSafety, getRefusalResponse } from './contentFilter.js';
 
-// تفعيل وضع التخفي!
 puppeteerExtra.use(StealthPlugin());
-
-// ===================================
-// إعدادات البوت
-// ===================================
 
 const CONFIG = {
   username: process.env.TIKTOK_USERNAME || '',
@@ -37,10 +33,6 @@ const CONFIG = {
   repliedMentions: new Set(),
   debugDir: process.env.DEBUG_DIR || '/tmp/bot-debug'
 };
-
-// ===================================
-// ردود ذكية احتياطية (إذا فشل AI)
-// ===================================
 
 const SMART_REPLIES = {
   ar: [
@@ -72,10 +64,6 @@ function getSmartReply(username) {
   return `@${username} ${reply}`;
 }
 
-// ===================================
-// نظام الذكاء الاصطناعي
-// ===================================
-
 async function createAIResponse(mentionText, videoDescription, mentionerUsername) {
   const safety = checkContentSafety(mentionText);
   if (!safety.isSafe) {
@@ -90,7 +78,6 @@ async function createAIResponse(mentionText, videoDescription, mentionerUsername
 
   try {
     const zai = await ZAI.create();
-
     const personas = {
       friendly: { name: 'صديق ودود', tone: 'ودود ومشجع' },
       funny: { name: 'فكاهي', tone: 'مرح وخفيف' },
@@ -131,36 +118,21 @@ async function createAIResponse(mentionText, videoDescription, mentionerUsername
     });
 
     let response = completion.choices[0]?.message?.content?.trim();
-
-    if (!response) {
-      return getSmartReply(mentionerUsername);
-    }
+    if (!response) return getSmartReply(mentionerUsername);
 
     const responseSafety = checkContentSafety(response);
-    if (!responseSafety.isSafe) {
-      return getRefusalResponse(responseSafety.category);
-    }
+    if (!responseSafety.isSafe) return getRefusalResponse(responseSafety.category);
 
     if (!response.startsWith(`@${mentionerUsername}`)) {
       response = `@${mentionerUsername} ${response}`;
     }
-
-    // تأكد أن الرد أقل من 150 حرف
-    if (response.length > 150) {
-      response = response.substring(0, 147) + '...';
-    }
-
+    if (response.length > 150) response = response.substring(0, 147) + '...';
     return response;
-
   } catch (error) {
     console.error('❌ خطأ في توليد الرد:', error.message);
     return getSmartReply(mentionerUsername);
   }
 }
-
-// ===================================
-// متصفح Puppeteer Stealth
-// ===================================
 
 class TikTokBot {
   constructor() {
@@ -168,11 +140,11 @@ class TikTokBot {
     this.page = null;
     this.isLoggedIn = false;
     this.runId = Date.now();
+    this.apiIntercepted = [];
   }
 
   async init() {
-    console.log('🌐 تشغيل المتصفح بخوض التخفي (Stealth v8.0)...');
-
+    console.log('🌐 تشغيل المتصفح Stealth v9.0 (Anti-Detect)...');
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 
     this.browser = await puppeteerExtra.launch({
@@ -187,43 +159,108 @@ class TikTokBot {
         '--disable-gpu',
         '--window-size=1920,1080',
         '--lang=ar-SA',
+        '--disable-features=IsolateOrigins,site-per-process',
         '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process'
+        '--disable-features=ImprovedCookieControls',
+        '--disable-features=SameSiteByDefaultCookies',
+        '--user-data-dir=/tmp/chrome-user-data'
       ]
     });
 
     this.page = await this.browser.newPage();
     await this.page.setViewport({ width: 1920, height: 1080 });
 
-    // User-Agent حقيقي
     await this.page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
     );
 
-    // إخفاء خصائص البوت
+    // v9.0: إخفاء خصائص البوت المحسّن
     await this.page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      window.chrome = { runtime: {} };
+      delete navigator.__proto__.webdriver;
+      window.chrome = {
+        runtime: { connect(){}, sendMessage(){}, onMessage:{ addListener(){} }, id: undefined },
+        loadTimes() { return {}; },
+        csi() { return {}; },
+        app: { isInstalled: false }
+      };
       Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5]
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin' }
+        ]
       });
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['ar-SA', 'ar', 'en-US', 'en']
-      });
+      Object.defineProperty(navigator, 'languages', { get: () => ['ar-SA', 'ar', 'en-US', 'en'] });
+      Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+      const origQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (params) => (
+        params.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission }) :
+          origQuery(params)
+      );
     });
 
-    // إنشاء مجلد التصحيح
+    // ===================================
+    // v9.0 السر: تعيين الكوكيز قبل أي تنقل!
+    // هذا يمنع HTTP 403 لأن تيك توك يشوف الكوكيز من أول طلب
+    // ===================================
+    if (CONFIG.sessionCookie) {
+      console.log('🍪 تعيين الكوكيز قبل فتح أي صفحة (v9.0 anti-403)...');
+      const cookies = this.parseCookies(CONFIG.sessionCookie);
+      await this.page.setCookie(...cookies);
+      console.log(`✅ تم تعيين ${cookies.length} كوكيز قبل التحميل`);
+    }
+
+    // v9.0: اعتراض طلبات الشبكة
+    this.page.on('response', async (response) => {
+      const url = response.url();
+      if (url.includes('/api/') && url.includes('tiktok.com')) {
+        try {
+          const status = response.status();
+          const contentType = response.headers()['content-type'] || '';
+          if (contentType.includes('json') || url.includes('notice_list') || url.includes('inbox') || url.includes('comment')) {
+            const text = await response.text().catch(() => '');
+            this.apiIntercepted.push({
+              url: url.substring(0, 200),
+              status,
+              bodyLength: text.length,
+              bodyPreview: text.substring(0, 300),
+              timestamp: Date.now()
+            });
+            console.log(`📡 API: ${url.substring(0, 80)} → ${status} (${text.length}b)`);
+          }
+        } catch (e) {}
+      }
+    });
+
     try {
       const fs = await import('fs');
       fs.mkdirSync(CONFIG.debugDir, { recursive: true });
     } catch (e) {}
 
-    console.log('✅ المتصفح Stealth v8.0 جاهز');
+    console.log('✅ المتصفح v9.0 جاهز (anti-403 + API intercept)');
   }
 
-  /**
-   * أخذ لقطة شاشة للتصحيح
-   */
+  parseCookies(cookieStr) {
+    return cookieStr.split(';').filter(c => c.trim()).map(pair => {
+      const [name, ...valueParts] = pair.trim().split('=');
+      const value = valueParts.join('=').trim();
+      if (!name || !value) return null;
+      const httpOnlyNames = ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_tt_ss', 'uid_tt', 'uid_tt_ss', 'odin_tt', 'odin_tt_ss'];
+      return {
+        name: name.trim(),
+        value,
+        domain: '.tiktok.com',
+        path: '/',
+        secure: true,
+        sameSite: 'None',
+        url: 'https://www.tiktok.com',
+        httpOnly: httpOnlyNames.includes(name.trim())
+      };
+    }).filter(Boolean);
+  }
+
   async debugScreenshot(name) {
     try {
       const path = `${CONFIG.debugDir}/${name}-${this.runId}.png`;
@@ -232,9 +269,6 @@ class TikTokBot {
     } catch (e) {}
   }
 
-  /**
-   * حفظ HTML للتصحيح
-   */
   async debugHTML(name) {
     try {
       const fs = await import('fs');
@@ -249,1251 +283,542 @@ class TikTokBot {
   // تسجيل الدخول
   // ===================================
 
-  /**
-   * تسجيل الدخول بالكوكيز (الطريقة الأفضل)
-   * v8.3: مبسّط - إذا الكوكيز موجودة نعتبر مسجل
-   */
-  async loginWithCookies() {
-    if (!CONFIG.sessionCookie) {
-      console.log('⚠️ لا يوجد TIKTOK_SESSION');
-      return false;
-    }
-
-    console.log('🍪 محاولة تسجيل الدخول بالكوكيز...');
+  async login() {
+    console.log('\n🔑 تسجيل الدخول...');
 
     try {
-      // فتح تيك توك أولاً
-      await this.page.goto('https://www.tiktok.com', {
+      await this.page.goto('https://www.tiktok.com/', {
         waitUntil: 'networkidle2',
         timeout: 60000
       });
-      await this.randomDelay(2000, 3000);
-
-      // تحليل الكوكيز وفصلها
-      const cookiePairs = CONFIG.sessionCookie.split(';').filter(c => c.trim());
-      const cookies = [];
-
-      for (const pair of cookiePairs) {
-        const [name, ...valueParts] = pair.trim().split('=');
-        const value = valueParts.join('=').trim();
-        if (!name || !value) continue;
-
-        const cookieObj = {
-          name: name.trim(),
-          value: value,
-          domain: '.tiktok.com',
-          path: '/',
-          secure: true,
-          sameSite: 'None'
-        };
-
-        // الكوكيز المهمة اللي تكون httpOnly
-        const httpOnlyNames = ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_tt_ss', 'uid_tt', 'uid_tt_ss', 'odin_tt', 'odin_tt_ss'];
-        if (httpOnlyNames.includes(name.trim())) {
-          cookieObj.httpOnly = true;
-        } else {
-          cookieObj.httpOnly = false;
-        }
-
-        cookies.push(cookieObj);
+    } catch (e) {
+      console.log(`⚠️ خطأ تحميل: ${e.message}`);
+      await this.randomDelay(3000, 5000);
+      try {
+        await this.page.goto('https://www.tiktok.com/', {
+          waitUntil: 'domcontentloaded',
+          timeout: 60000
+        });
+      } catch (e2) {
+        console.log(`❌ فشل تحميل مرتين`);
       }
+    }
 
-      await this.page.setCookie(...cookies);
-      console.log(`✅ تم تحميل ${cookies.length} كوكيز`);
-      console.log(`📋 أسماء الكوكيز: ${cookies.map(c => c.name).join(', ')}`);
+    await this.randomDelay(3000, 5000);
+    await this.debugScreenshot('homepage');
 
-      // إعادة تحميل الصفحة بالكوكيز الجديدة
-      await this.page.goto('https://www.tiktok.com', {
+    const homeStatus = await this.page.evaluate(() => ({
+      title: document.title?.substring(0, 100),
+      is403: document.title?.includes('403') || document.body?.textContent?.includes('ERROR 403'),
+      is404: document.title?.includes('404'),
+      hasLoginBtn: !!document.querySelector('[data-e2e="login-button"]'),
+      hasProfile: !!document.querySelector('[data-e2e="profile-icon"]'),
+      url: window.location.href
+    }));
+
+    console.log(`📋 الصفحة الرئيسية: title="${homeStatus.title}", 403=${homeStatus.is403}, profile=${homeStatus.hasProfile}`);
+
+    if (homeStatus.is403) {
+      console.log('🚫 403! جرب mobile UA...');
+      await this.page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
+      // أعد تعيين الكوكيز مع UA الجديد
+      if (CONFIG.sessionCookie) {
+        const cookies = this.parseCookies(CONFIG.sessionCookie);
+        await this.page.setCookie(...cookies);
+      }
+      await this.page.goto('https://www.tiktok.com/', {
         waitUntil: 'networkidle2',
         timeout: 60000
       });
       await this.randomDelay(3000, 5000);
-
-      // فحص سريع - هل الكوكيز فعّالة؟
-      const hasSessionCookies = cookies.some(c => 
-        ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_tt_ss', 'd_ticket'].includes(c.name)
-      );
-
-      if (hasSessionCookies) {
-        this.isLoggedIn = true;
-        console.log('✅ كوكيز الجلسة موجودة - مسجل الدخول! 🎉');
-        return true;
-      }
-
-      // إذا ما عندنا كوكيز جلسة، تحقق من الصفحة
-      const loggedIn = await this.checkIfLoggedIn();
-      if (loggedIn) {
-        this.isLoggedIn = true;
-        console.log('✅ تم تسجيل الدخول بالكوكيز! 🎉');
-        return true;
-      }
-
-      console.log('❌ فشل تسجيل الدخول بالكوكيز');
-      return false;
-    } catch (error) {
-      console.error('❌ خطأ في تسجيل الدخول بالكوكيز:', error.message);
-      // إذا عندنا كوكيز session، نعتبر مسجل
-      if (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt')) {
-        this.isLoggedIn = true;
-        console.log('⚠️ خطأ لكن الكوكيز موجودة - أعتبر مسجل الدخول');
-        return true;
-      }
-      return false;
+      await this.debugScreenshot('homepage-mobile');
     }
+
+    const loggedIn = await this.checkIfLoggedIn();
+    if (loggedIn) {
+      this.isLoggedIn = true;
+      console.log('✅ تم تسجيل الدخول! 🎉');
+      return true;
+    }
+
+    // Fallback: جرب الباسورد
+    console.log('⚠️ الكوكيز ما نفعت - جرب الباسورد...');
+    if (await this.loginWithPassword()) {
+      this.isLoggedIn = true;
+      console.log('✅ تم تسجيل الدخول بالباسورد! 🎉');
+      return true;
+    }
+
+    console.log('❌ فشل تسجيل الدخول!');
+    return false;
   }
 
-  /**
-   * تسجيل الدخول باليوزر والباسورد
-   */
   async loginWithPassword() {
-    if (!CONFIG.username || !CONFIG.password) {
-      console.log('⚠️ لا يوجد بيانات دخول (يوزر/باسورد)');
-      return false;
-    }
-
-    console.log(`🔑 تسجيل الدخول باسم @${CONFIG.username}...`);
+    if (!CONFIG.username || !CONFIG.password) return false;
+    console.log(`🔑 تسجيل دخول بالباسورد: @${CONFIG.username}...`);
 
     try {
       await this.page.goto('https://www.tiktok.com/login/phone-or-email/email', {
-        waitUntil: 'networkidle2',
-        timeout: 60000
+        waitUntil: 'networkidle2', timeout: 60000
       });
-
       await this.randomDelay(3000, 5000);
-      await this.debugScreenshot('login-page');
 
-      // إدخال اسم المستخدم
       const usernameInput = await this.page.$('input[name="username"]') ||
-                             await this.page.$('input[type="text"]') ||
-                             await this.page.$('input[placeholder*="email"]');
-
+                             await this.page.$('input[type="text"]');
       if (usernameInput) {
         await usernameInput.click({ clickCount: 3 });
         await this.randomDelay(500, 1000);
         await this.page.keyboard.type(CONFIG.username, { delay: 80 + Math.random() * 120 });
-        console.log('✅ تم إدخال اسم المستخدم');
       }
 
       await this.randomDelay(1500, 2500);
-
-      // إدخال كلمة المرور
       const passwordInput = await this.page.$('input[type="password"]');
       if (passwordInput) {
         await passwordInput.click({ clickCount: 3 });
         await this.randomDelay(500, 1000);
         await this.page.keyboard.type(CONFIG.password, { delay: 80 + Math.random() * 120 });
-        console.log('✅ تم إدخال كلمة المرور');
       }
 
       await this.randomDelay(1500, 2500);
-
-      // الضغط على زر تسجيل الدخول
-      const loginButton = await this.page.$('button[data-e2e="login-button"]') ||
-                           await this.page.$('button[type="submit"]');
-      if (loginButton) {
-        await loginButton.click();
-        console.log('✅ تم الضغط على زر الدخول');
-      }
+      const loginBtn = await this.page.$('button[data-e2e="login-button"]') ||
+                        await this.page.$('button[type="submit"]');
+      if (loginBtn) await loginBtn.click();
 
       await this.randomDelay(5000, 8000);
-      await this.handleCaptcha();
-      await this.randomDelay(3000, 5000);
-      await this.debugScreenshot('after-password-login');
-
-      const loggedIn = await this.checkIfLoggedIn();
-      if (loggedIn) {
-        this.isLoggedIn = true;
-        console.log('✅ تم تسجيل الدخول بالباسورد! 🎉');
-        return true;
+      // CAPTCHA handler
+      const slider = await this.page.$('[class*="slider"]') || await this.page.$('[class*="drag"]');
+      if (slider) {
+        const box = await slider.boundingBox();
+        if (box) {
+          await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+          await this.page.mouse.down();
+          await this.page.mouse.move(box.x + box.width + 200, box.y + box.height / 2, { steps: 30 });
+          await this.page.mouse.up();
+          await this.randomDelay(2000, 3000);
+        }
       }
-
-      console.log('❌ فشل تسجيل الدخول بالباسورد');
-      return false;
-    } catch (error) {
-      console.error('❌ خطأ في تسجيل الدخول:', error.message);
+      await this.randomDelay(3000, 5000);
+      return await this.checkIfLoggedIn();
+    } catch (e) {
+      console.error('❌ خطأ:', e.message);
       return false;
     }
   }
 
-  /**
-   * محاولة التعامل مع CAPTCHA
-   */
-  async handleCaptcha() {
-    try {
-      const captchaExists = await this.page.evaluate(() => {
-        const slider = document.querySelector('[class*="captcha-slider"]') ||
-                       document.querySelector('[class*="verify"]') ||
-                       document.querySelector('iframe[src*="captcha"]');
-        const imgCaptcha = document.querySelector('[class*="captcha"]') ||
-                          document.querySelector('[id*="captcha"]');
-        return !!(slider || imgCaptcha);
-      });
-
-      if (captchaExists) {
-        console.log('🤖 تم اكتشاف CAPTCHA - محاولة التخطي...');
-
-        const slider = await this.page.$('[class*="slider"]') ||
-                       await this.page.$('[class*="drag"]');
-        if (slider) {
-          const box = await slider.boundingBox();
-          if (box) {
-            await this.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await this.page.mouse.down();
-            await this.page.mouse.move(box.x + box.width + 200, box.y + box.height / 2, { steps: 30 });
-            await this.page.mouse.up();
-            await this.randomDelay(2000, 3000);
-          }
-        }
-      }
-    } catch (error) {}
-  }
-
-  /**
-   * تحقق هل المستخدم مسجل دخول
-   * v8.1: طريقة أكثر مرونة مع عدة محاولات
-   */
   async checkIfLoggedIn() {
     try {
-      // انتظار إضافي عشان الصفحة تتحمل
       await this.randomDelay(2000, 3000);
 
-      // الطريقة 1: فحص العناصر في الصفحة
-      const elementCheck = await this.page.evaluate(() => {
-        const profileImg = document.querySelector('[data-e2e="profile-icon"]') ||
-                           document.querySelector('[data-e2e="menu-profile"]') ||
-                           document.querySelector('[class*="avatar"][class*="logged"]') ||
-                           document.querySelector('img[alt*="profile"]') ||
-                           document.querySelector('[data-e2e="profile-avatar"]');
-        const loginBtn = document.querySelector('[data-e2e="login-button"]') ||
-                        document.querySelector('a[href="/login"]');
-
-        if (profileImg) return { loggedIn: true, method: 'profile-icon' };
-        if (loginBtn) return { loggedIn: false, method: 'login-button-found' };
+      const check = await this.page.evaluate(() => {
+        const profile = document.querySelector('[data-e2e="profile-icon"]') ||
+                       document.querySelector('[data-e2e="menu-profile"]');
+        const loginBtn = document.querySelector('[data-e2e="login-button"]');
+        if (profile) return { loggedIn: true, method: 'profile' };
+        if (loginBtn) return { loggedIn: false, method: 'login-btn' };
         return { loggedIn: null, method: 'uncertain' };
       });
 
-      if (elementCheck.loggedIn === true) {
-        console.log(`✅ تسجيل الدخول مؤكد (عنصر: ${elementCheck.method})`);
-        return true;
-      }
-      if (elementCheck.loggedIn === false) {
-        console.log(`❌ زر الدخول موجود - غير مسجل`);
-        return false;
-      }
+      if (check.loggedIn === true) { console.log(`✅ مسجل (${check.method})`); return true; }
+      if (check.loggedIn === false) { console.log(`❌ غير مسجل (${check.method})`); return false; }
 
-      // الطريقة 2: فحص URL
-      const url = this.page.url();
-      if (url.includes('/login') || url.includes('/signup')) {
-        console.log('❌ لسه في صفحة تسجيل الدخول');
-        return false;
-      }
-
-      // الطريقة 3: فحص الكوكيز اللي نقدر نوصلها
-      const cookieCheck = await this.page.evaluate(() => {
-        const cookies = document.cookie;
-        // إذا فيه sessionid أو sid_tt في الكوكيز = مسجل
-        if (cookies.includes('sessionid') || cookies.includes('sid_tt') || 
-            cookies.includes('uid_tt') || cookies.includes('d_ticket')) {
-          return { loggedIn: true, method: 'cookies-present' };
-        }
-        return { loggedIn: null, method: 'no-session-cookies' };
-      });
-
-      if (cookieCheck.loggedIn === true) {
-        console.log(`✅ تسجيل الدخول مؤكد (كوكيز: ${cookieCheck.method})`);
-        return true;
-      }
-
-      // الطريقة 4: محاولة الوصول للبروفايل
-      console.log('🔍 فحص البروفايل...');
-      await this.page.goto(`https://www.tiktok.com/@${CONFIG.username}`, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      });
-      await this.randomDelay(3000, 5000);
-
-      const profileCheck = await this.page.evaluate(() => {
-        // إذا في زر Edit profile = مسجل دخول وحسابك
-        const editBtn = document.querySelector('[data-e2e="edit-profile"]') ||
-                       document.querySelector('button[data-e2e="profile-following"]');
-        // إذا في زر Follow = ما عندك صلاحية (مو حسابك أو مو مسجل)
-        const followBtn = document.querySelector('[data-e2e="follow-button"]');
-        // إذا في username display
-        const usernameEl = document.querySelector('[data-e2e="user-title"]');
-        
-        return {
-          hasEdit: !!editBtn,
-          hasFollow: !!followBtn,
-          hasUsername: !!usernameEl
-        };
-      });
-
-      if (profileCheck.hasEdit) {
-        console.log('✅ زر تعديل الملف موجود - مسجل الدخول!');
-        return true;
-      }
-      if (profileCheck.hasFollow) {
-        console.log('❌ زر متابعة موجود - غير مسجل الدخول');
-        return false;
-      }
-
-      // الطريقة 5: إذا عندنا كوكيز session، نعتبر مسجل حتى لو ما شفنا عنصر
-      if (CONFIG.sessionCookie && (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt'))) {
-        console.log('⚠️ لم أجد عنصر تأكيد، لكن الكوكيز موجودة - أعتبر مسجل الدخول');
-        return true;
-      }
-
-      console.log('⚠️ غير متأكد من حالة الدخول');
-      return false;
-    } catch (error) {
-      console.error('❌ خطأ في فحص الدخول:', error.message);
-      // إذا عندنا كوكيز session، نعتبر مسجل
-      if (CONFIG.sessionCookie && (CONFIG.sessionCookie.includes('sessionid') || CONFIG.sessionCookie.includes('sid_tt'))) {
-        console.log('⚠️ خطأ في الفحص لكن الكوكيز موجودة - أعتبر مسجل الدخول');
-        return true;
-      }
-      return false;
-    }
-  }
-
-  // ===================================
-  // جلب المنشنات - 3 طرق + مساعدات
-  // ===================================
-
-  /**
-   * الحصول على msToken من الكوكيز
-   */
-  async getMSToken() {
-    try {
+      // فحص الكوكيز
       const cookies = await this.page.cookies();
-      const msToken = cookies.find(c => c.name === 'msToken');
-      return msToken ? msToken.value : '';
-    } catch (e) {
-      return '';
-    }
-  }
+      const hasSession = cookies.some(c => ['sessionid', 'sid_tt', 'd_ticket'].includes(c.name));
+      if (hasSession) { console.log('✅ كوكيز جلسة موجودة'); return true; }
 
-  /**
-   * الطريقة 1: جلب المنشنات عبر API (مع msToken)
-   */
-  async fetchMentionsViaAPI() {
-    console.log('📡 الطريقة 1: جلب المنشنات عبر API...');
-
-    try {
-      // دائماً اروح للصفحة الرئيسية أولاً
-      await this.page.goto('https://www.tiktok.com', {
-        waitUntil: 'networkidle2',
-        timeout: 60000
-      });
-      await this.randomDelay(3000, 5000);
-
-      const mentions = [];
-
-      // جرب group=2 (منشنات) و group=3 (تعليقات)
-      for (const group of [2, 3]) {
-        try {
-          // الطريقة A: fetch
-          const result = await this.page.evaluate(async (groupNum) => {
-            try {
-              // الطريقة 1: fetch
-              const response = await fetch(`https://www.tiktok.com/api/inbox/notice_list/?group=${groupNum}&count=20`, {
-                credentials: 'include',
-                headers: {
-                  'Accept': 'application/json'
-                }
-              });
-
-              if (!response.ok) {
-                return { error: `fetch HTTP ${response.status}`, method: 'fetch' };
-              }
-
-              const text = await response.text();
-
-              let jsonText = text;
-              if (text.startsWith('while(1)') || text.startsWith('for(;;)')) {
-                jsonText = text.substring(text.indexOf('{'));
-              }
-              const firstBrace = jsonText.indexOf('{');
-              if (firstBrace > 0) {
-                jsonText = jsonText.substring(firstBrace);
-              }
-
-              const data = JSON.parse(jsonText);
-              return { data, group: groupNum, rawKeys: Object.keys(data), method: 'fetch' };
-            } catch (fetchErr) {
-              // الطريقة 2: XMLHttpRequest
-              try {
-                return await new Promise((resolve) => {
-                  const xhr = new XMLHttpRequest();
-                  xhr.open('GET', `https://www.tiktok.com/api/inbox/notice_list/?group=${groupNum}&count=20`, true);
-                  xhr.withCredentials = true;
-                  xhr.setRequestHeader('Accept', 'application/json');
-                  xhr.onload = function() {
-                    try {
-                      let text = xhr.responseText;
-                      if (text.startsWith('while(1)') || text.startsWith('for(;;)')) {
-                        text = text.substring(text.indexOf('{'));
-                      }
-                      const fb = text.indexOf('{');
-                      if (fb > 0) text = text.substring(fb);
-                      const data = JSON.parse(text);
-                      resolve({ data, group: groupNum, rawKeys: Object.keys(data), method: 'xhr' });
-                    } catch (e) {
-                      resolve({ error: `xhr parse: ${e.message}`, method: 'xhr' });
-                    }
-                  };
-                  xhr.onerror = function() {
-                    resolve({ error: `xhr error: ${xhr.status}`, method: 'xhr' });
-                  };
-                  xhr.send();
-                });
-              } catch (xhrErr) {
-                return { error: `fetch: ${fetchErr.message}, xhr: ${xhrErr.message}`, method: 'both' };
-              }
-            }
-          }, group);
-
-          if (result.error) {
-            console.log(`⚠️ API group=${group} خطأ (${result.method}): ${result.error}`);
-            continue;
-          }
-
-          if (result.data) {
-            console.log(`✅ API group=${group} رجع بيانات! (${result.method}) Keys: ${result.rawKeys?.join(', ')}`);
-
-            // تسجيل هيكل البيانات للتصحيح
-            const dataStr = JSON.stringify(result.data).substring(0, 800);
-            console.log(`📋 API raw preview: ${dataStr}`);
-
-            // محاولة استخراج القائمة بعدة طرق
-            let noticeList = result.data.notice_list || result.data.notifications || 
-                            result.data.data?.notice_list || result.data.data?.notifications ||
-                            result.data.body?.notice_list || result.data.body?.notifications || [];
-
-            // إذا القائمة فاضية، شوف إذا البيانات نفسها عبارة عن مصفوفة
-            if (!Array.isArray(noticeList) || noticeList.length === 0) {
-              // جرب الدخول أعمق
-              for (const key of Object.keys(result.data)) {
-                const val = result.data[key];
-                if (Array.isArray(val) && val.length > 0) {
-                  console.log(`📋 Found array at key: ${key} (${val.length} items)`);
-                  noticeList = val;
-                  break;
-                }
-                if (val && typeof val === 'object' && !Array.isArray(val)) {
-                  for (const subKey of Object.keys(val)) {
-                    if (Array.isArray(val[subKey]) && val[subKey].length > 0) {
-                      console.log(`📋 Found array at ${key}.${subKey} (${val[subKey].length} items)`);
-                      noticeList = val[subKey];
-                      break;
-                    }
-                  }
-                  if (noticeList.length > 0) break;
-                }
-              }
-            }
-
-            console.log(`📋 عدد الإشعارات: ${noticeList.length}`);
-
-            // إذا لسه ما لقينا شي، سجّل أول عنصر لو موجود
-            if (noticeList.length > 0) {
-              const sampleStr = JSON.stringify(noticeList[0]).substring(0, 300);
-              console.log(`📋 عينة إشعار: ${sampleStr}`);
-            }
-
-            for (const notice of noticeList) {
-              try {
-                // استخراج النص بكل الطرق الممكنة
-                const content = notice.content || notice.title || notice.body || notice.text || '';
-                const username = notice.from_user?.unique_id || notice.from_user?.nickname || 
-                               notice.user?.unique_id || notice.user?.nickname ||
-                               notice.author?.unique_id || notice.from?.unique_id || '';
-                const videoUrl = notice.target_url || notice.url || notice.link || 
-                               notice.target?.url || notice.extra?.url || '';
-                const commentText = notice.comment?.text || notice.comment?.content || 
-                                   notice.content || notice.body || '';
-                const noticeType = notice.type || notice.sub_type || notice.action_type || '';
-
-                console.log(`📋 إشعار: type=${noticeType}, user=@${username}, url=${videoUrl}, content=${(commentText || content).substring(0, 60)}`);
-
-                // تحقق إنه منشن - بطريقة مرنة
-                const isMention = content.includes('@' + CONFIG.username) || 
-                    commentText.includes('@' + CONFIG.username) ||
-                    noticeType === 'mention' || noticeType === 'mention_comment' || 
-                    noticeType === '3' || noticeType === 3 ||
-                    String(noticeType).includes('mention');
-                  
-                if (isMention) {
-                  const mentionId = notice.id || notice.create_time || (videoUrl + commentText).slice(0, 50);
-                  
-                  if (!CONFIG.repliedMentions.has(String(mentionId))) {
-                    mentions.push({
-                      text: commentText || content,
-                      mentioner: username,
-                      videoUrl: videoUrl,
-                      id: String(mentionId),
-                      source: 'api',
-                      group: group
-                    });
-                    console.log(`📬 منشن موجود! @${username}: ${(commentText || content).substring(0, 60)}`);
-                  }
-                }
-              } catch (e) {
-                console.log(`⚠️ خطأ في تحليل إشعار: ${e.message}`);
-              }
-            }
-          }
-        } catch (e) {
-          console.log(`⚠️ خطأ API group=${group}:`, e.message);
-        }
-      }
-
-      console.log(`📡 API: وجد ${mentions.length} منشن جديد`);
-      return mentions;
-
-    } catch (error) {
-      console.error('❌ خطأ في API:', error.message);
-      return [];
-    }
-  }
-
-  /**
-   * الطريقة 2: مسح صفحة الإشعارات (محسّن)
-   * v8.6: فحص أعمق + حفظ مرجع الإشعار للضغط عليه لاحقاً
-   */
-  async findMentionsInNotificationsPage() {
-    console.log('🔔 الطريقة 2: مسح صفحة الإشعارات...');
-
-    try {
-      // جرب رابط الإشعارات المباشر
-      await this.page.goto('https://www.tiktok.com/inbox?is_from_webapp=1&webapp_id=1988', {
-        waitUntil: 'networkidle2',
-        timeout: 60000
-      });
-      await this.randomDelay(3000, 5000);
-      await this.debugScreenshot('notifications-page');
-
-      const mentions = [];
-
-      // استخراج كل الروابط والنصوص من الإشعارات
-      // وتخزين العناصر للضغط عليها لاحقاً
-      const notifData = await this.page.evaluate((botUsername) => {
-        const results = [];
-        
-        // كل الروابط اللي فيها /video/
-        const allLinks = document.querySelectorAll('a[href*="/video/"]');
-        for (const a of allLinks) {
-          const text = a.textContent?.trim() || '';
-          const href = a.href || '';
-          const parentText = a.closest('div')?.textContent?.trim() || text;
-          
-          // هل هذا منشن؟
-          const isMention = text.includes('@' + botUsername) || 
-                           parentText.includes('mentioned you') || 
-                           parentText.includes('منشن') || parentText.includes('ذكر');
-          
-          results.push({
-            text: parentText.substring(0, 300),
-            url: href,
-            type: isMention ? 'mention-link' : 'video-link',
-            index: results.length
-          });
-        }
-
-        // كل عناصر الإشعار
-        const notifItems = document.querySelectorAll(
-          '[data-e2e="inbox-notification"], [class*="notification"], [class*="Notification"], [class*="inbox-item"]'
-        );
-        for (const item of notifItems) {
-          const text = item.textContent?.trim() || '';
-          const link = item.querySelector('a')?.href || '';
-          if (text.length > 5) {
-            results.push({
-              text: text.substring(0, 300),
-              url: link,
-              type: text.includes('mentioned') ? 'mention-notification' : 'notification-item',
-              index: results.length
-            });
-          }
-        }
-
-        return results;
-      }, CONFIG.username);
-
-      console.log(`🔔 وجد ${notifData.length} عنصر في صفحة الإشعارات`);
-      for (const item of notifData.slice(0, 10)) {
-        console.log(`   📋 ${item.type}: "${item.text.substring(0, 60)}..." → ${item.url.substring(0, 60)}`);
-      }
-
-      // فلترة المنشنات
-      for (const item of notifData) {
-        if (item.type === 'mention-link' || item.type === 'mention-notification' ||
-            item.text.includes('@' + CONFIG.username) || 
-            item.text.toLowerCase().includes('mention') || 
-            item.text.includes('منشن') || item.text.includes('ذكر')) {
-          const mentionId = item.url || item.text.slice(0, 50);
-          if (!CONFIG.repliedMentions.has(mentionId) && item.url) {
-            const usernameMatch = item.text.match(/@(\w+)/);
-            const mentioner = usernameMatch && usernameMatch[1] !== CONFIG.username ? usernameMatch[1] : 'user';
-            mentions.push({
-              text: item.text,
-              mentioner: mentioner,
-              videoUrl: item.url,
-              id: mentionId,
-              source: 'notifications-page',
-              notifIndex: item.index
-            });
-          }
-        }
-      }
-
-      console.log(`🔔 إشعارات: وجد ${mentions.length} منشن جديد`);
-      
-      // حفظ URL الإشعارات للضغط لاحقاً
-      this._notificationsPageUrl = this.page.url();
-      
-      return mentions;
-
-    } catch (error) {
-      console.error('❌ خطأ في صفحة الإشعارات:', error.message);
-      return [];
-    }
-  }
-
-  /**
-   * الطريقة 3: مسح فيديوهات البوت نفسه (احتياطي)
-   * يروح لبروفايل البوت ويفحص التعليقات
-   */
-  async findMentionsInMyVideos() {
-    console.log('🎬 الطريقة 3: مسح فيديوهات البوت...');
-
-    try {
+      // فحص البروفايل
       await this.page.goto(`https://www.tiktok.com/@${CONFIG.username}`, {
-        waitUntil: 'networkidle2',
-        timeout: 60000
+        waitUntil: 'domcontentloaded', timeout: 30000
       });
+      await this.randomDelay(3000, 5000);
+
+      const profileCheck = await this.page.evaluate(() => ({
+        hasEdit: !!document.querySelector('[data-e2e="edit-profile"]'),
+        hasFollow: !!document.querySelector('[data-e2e="follow-button"]'),
+        is403: document.title?.includes('403')
+      }));
+
+      if (profileCheck.hasEdit) return true;
+      if (profileCheck.hasFollow && !profileCheck.is403) return false;
+      if (profileCheck.is403 && CONFIG.sessionCookie) { console.log('⚠️ 403 لكن كوكيز موجودة'); return true; }
+      return false;
+    } catch (e) {
+      return CONFIG.sessionCookie ? true : false;
+    }
+  }
+
+  // ===================================
+  // جلب المنشنات
+  // ===================================
+
+  async fetchMentionsViaAPI() {
+    console.log('📡 الطريقة 1: API...');
+    try {
+      if (!this.page.url().includes('tiktok.com')) {
+        await this.page.goto('https://www.tiktok.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await this.randomDelay(2000, 3000);
+      }
+
+      const mentions = [];
+      const endpoints = [
+        { path: '/api/inbox/notice_list/', params: { group: 2, count: 20 } },
+        { path: '/api/inbox/notice_list/', params: { group: 3, count: 20 } },
+        { path: '/api/user/mention/', params: { count: 20 } },
+      ];
+
+      for (const ep of endpoints) {
+        try {
+          const result = await this.page.evaluate(async (endpoint) => {
+            try {
+              const params = new URLSearchParams(endpoint.params);
+              const resp = await fetch(`https://www.tiktok.com${endpoint.path}?${params}`, {
+                credentials: 'include',
+                headers: { 'Accept': 'application/json', 'Referer': 'https://www.tiktok.com/' }
+              });
+              if (!resp.ok) return { error: `HTTP ${resp.status}` };
+              const text = await resp.text();
+              let json = text;
+              if (json.startsWith('while(1)') || json.startsWith('for(;;)')) json = json.substring(json.indexOf('{'));
+              const fb = json.indexOf('{'); if (fb > 0) json = json.substring(fb);
+              const data = JSON.parse(json);
+              return { data, preview: JSON.stringify(data).substring(0, 500) };
+            } catch (e) { return { error: e.message }; }
+          }, ep);
+
+          if (result.error) { console.log(`⚠️ API: ${result.error}`); continue; }
+
+          console.log(`✅ API رجع: ${result.preview?.substring(0, 150)}`);
+
+          // استخراج القائمة
+          let list = [];
+          const d = result.data;
+          const paths = [d.notice_list, d.notifications, d.data, d.body?.notice_list, d.data?.notice_list, d.data?.list, d.list, d.items];
+          for (const p of paths) { if (Array.isArray(p) && p.length > 0) { list = p; break; } }
+          if (list.length === 0) {
+            for (const k of Object.keys(d)) {
+              if (Array.isArray(d[k]) && d[k].length > 0 && typeof d[k][0] === 'object') { list = d[k]; break; }
+            }
+          }
+
+          console.log(`📋 ${list.length} إشعار`);
+
+          for (const n of list) {
+            const content = n.content || n.title || n.body || n.text || '';
+            const user = n.from_user?.unique_id || n.user?.unique_id || n.author?.unique_id || '';
+            const url = n.target_url || n.url || n.link || '';
+            const comment = n.comment?.text || n.content || '';
+            const type = n.type || n.sub_type || '';
+            const isMention = content.includes('@' + CONFIG.username) || comment.includes('@' + CONFIG.username) ||
+                String(type).includes('mention');
+            if (isMention) {
+              const id = n.id || (url + comment).slice(0, 50);
+              if (!CONFIG.repliedMentions.has(String(id))) {
+                mentions.push({ text: comment || content, mentioner: user, videoUrl: url, id: String(id), source: 'api' });
+                console.log(`📬 منشن! @${user}: ${(comment || content).substring(0, 60)}`);
+              }
+            }
+          }
+        } catch (e) { console.log(`⚠️ خطأ API:`, e.message); }
+      }
+      return mentions;
+    } catch (e) { console.error('❌ خطأ:', e.message); return []; }
+  }
+
+  async findMentionsInNotificationsPage() {
+    console.log('🔔 الطريقة 2: صفحة الإشعارات...');
+    try {
+      const urls = ['https://www.tiktok.com/inbox', 'https://www.tiktok.com/inbox/mentions', 'https://www.tiktok.com/notifications'];
+      let notifData = [];
+
+      for (const notifUrl of urls) {
+        console.log(`🔗 جرب: ${notifUrl}`);
+        await this.page.goto(notifUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await this.randomDelay(3000, 5000);
+
+        const status = await this.page.evaluate(() => ({
+          title: document.title?.substring(0, 50),
+          is404: document.title?.includes('404'),
+          is403: document.title?.includes('403'),
+          hasContent: !!document.querySelector('[data-e2e="inbox"]') ||
+                      !!document.querySelector('[class*="inbox"]') ||
+                      !!document.querySelector('[class*="notification"]')
+        }));
+
+        console.log(`📋 title="${status.title}", 404=${status.is404}, hasContent=${status.hasContent}`);
+
+        if (!status.is404 && !status.is403) {
+          await this.debugScreenshot(`notif-${notifUrl.split('/').pop()}`);
+          notifData = await this.page.evaluate((bot) => {
+            const results = [];
+            document.querySelectorAll('a[href*="/video/"]').forEach(a => {
+              const text = (a.closest('div')?.textContent || a.textContent || '').trim();
+              const isMention = text.includes('@' + bot) || text.includes('mentioned') || text.includes('ذكر');
+              results.push({ text: text.substring(0, 300), url: a.href, type: isMention ? 'mention' : 'link' });
+            });
+            document.querySelectorAll('[data-e2e="inbox-notification"], [class*="notification"]').forEach(item => {
+              const text = (item.textContent || '').trim();
+              const link = item.querySelector('a')?.href || '';
+              if (text.length > 5) results.push({ text: text.substring(0, 300), url: link, type: text.includes('mentioned') ? 'mention' : 'notif' });
+            });
+            return results;
+          }, CONFIG.username);
+
+          if (notifData.length > 0 || status.hasContent) break;
+        }
+      }
+
+      const mentions = [];
+      for (const item of notifData) {
+        if (item.type === 'mention' || item.text.includes('@' + CONFIG.username) || item.text.toLowerCase().includes('mention')) {
+          const id = item.url || item.text.slice(0, 50);
+          if (!CONFIG.repliedMentions.has(id) && item.url) {
+            const userMatch = item.text.match(/@(\w+)/);
+            const mentioner = userMatch && userMatch[1] !== CONFIG.username ? userMatch[1] : 'user';
+            mentions.push({ text: item.text, mentioner, videoUrl: item.url, id, source: 'notifications' });
+          }
+        }
+      }
+      console.log(`🔔 وجد ${mentions.length} منشن`);
+      return mentions;
+    } catch (e) { console.error('❌ خطأ:', e.message); return []; }
+  }
+
+  async findMentionsInMyVideos() {
+    console.log('🎬 الطريقة 3: فيديوهات البوت...');
+    try {
+      await this.page.goto(`https://www.tiktok.com/@${CONFIG.username}`, { waitUntil: 'networkidle2', timeout: 60000 });
       await this.randomDelay(3000, 5000);
       await this.debugScreenshot('bot-profile');
 
-      // جلب روابط الفيديوهات - بطريقة محسنة
+      const is403 = await this.page.evaluate(() => document.title?.includes('403'));
+      if (is403) {
+        console.log('⚠️ 403 - جرب mobile...');
+        await this.page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15');
+        if (CONFIG.sessionCookie) await this.page.setCookie(...this.parseCookies(CONFIG.sessionCookie));
+        await this.page.goto(`https://www.tiktok.com/@${CONFIG.username}`, { waitUntil: 'networkidle2', timeout: 60000 });
+        await this.randomDelay(3000, 5000);
+      }
+
       let videoLinks = await this.page.evaluate(() => {
-        const links = [];
-        // الطريقة 1: روابط الفيديو المباشرة
-        const allAnchors = document.querySelectorAll('a');
-        for (const a of allAnchors) {
-          if (a.href && a.href.includes('/video/')) {
-            links.push(a.href);
-          }
-        }
-        // الطريقة 2: عناصر البوست
-        const postItems = document.querySelectorAll('[data-e2e="user-post-item"], [data-e2e="user-post-item-list"]');
-        for (const item of postItems) {
-          const a = item.querySelector('a') || item.closest('a');
-          if (a && a.href) {
-            links.push(a.href);
-          }
-        }
-        return [...new Set(links)].slice(0, 5);
+        const links = new Set();
+        document.querySelectorAll('a').forEach(a => { if (a.href?.includes('/video/')) links.add(a.href); });
+        document.querySelectorAll('[data-e2e="user-post-item"]').forEach(item => {
+          const a = item.querySelector('a'); if (a?.href) links.add(a.href);
+        });
+        return [...links].slice(0, 5);
       });
 
-      // إذا ما لقينا فيديوهات، جرب التمرير لتحميلها
       if (videoLinks.length === 0) {
-        console.log('⏳ لم أجد فيديوهات - أحاول التمرير...');
-        await this.page.evaluate(() => window.scrollBy(0, 1000));
-        await this.randomDelay(2000, 3000);
-        await this.debugScreenshot('profile-scrolled');
-        
+        for (let i = 0; i < 3; i++) {
+          await this.page.evaluate(() => window.scrollBy(0, 1000));
+          await this.randomDelay(2000, 3000);
+        }
         videoLinks = await this.page.evaluate(() => {
-          const links = [];
-          const allAnchors = document.querySelectorAll('a');
-          for (const a of allAnchors) {
-            if (a.href && a.href.includes('/video/')) {
-              links.push(a.href);
-            }
-          }
-          return [...new Set(links)].slice(0, 5);
+          const links = new Set();
+          document.querySelectorAll('a').forEach(a => { if (a.href?.includes('/video/')) links.add(a.href); });
+          return [...links].slice(0, 5);
         });
       }
 
-      console.log(`🎬 وجد ${videoLinks.length} فيديو في البروفايل`);
-      
-      // سجّل كل الروابط اللي لقيناها
-      if (videoLinks.length === 0) {
-        // احفظ HTML للتحليل
-        await this.debugHTML('profile-page');
-        console.log('📄 تم حفظ HTML البروفايل للتحليل');
-      }
+      console.log(`🎬 وجد ${videoLinks.length} فيديو`);
+      if (videoLinks.length === 0) await this.debugHTML('no-videos');
 
       const mentions = [];
-
-      // فحص كل فيديو
       for (const videoUrl of videoLinks) {
         try {
-          console.log(`📺 فحص: ${videoUrl}`);
-          await this.page.goto(videoUrl, {
-            waitUntil: 'networkidle2',
-            timeout: 60000
-          });
+          await this.page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
           await this.randomDelay(2000, 3000);
+          const commentBtn = await this.page.$('[data-e2e="comment-button"]');
+          if (commentBtn) { await commentBtn.click(); await this.randomDelay(3000, 5000); }
 
-          // فتح قسم التعليقات
-          const commentBtn = await this.page.$('[data-e2e="comment-button"], [class*="comment-icon"]');
-          if (commentBtn) {
-            await commentBtn.click();
-            await this.randomDelay(2000, 3000);
-          }
-
-          // البحث عن تعليقات فيها @منشن البوت
-          const commentMentions = await this.page.evaluate((botUsername) => {
+          const commentMentions = await this.page.evaluate((bot) => {
             const results = [];
-            const comments = document.querySelectorAll('[data-e2e="comment-level-1"], [class*="comment-item"], div[class*="CommentContent"]');
-            
-            for (const comment of comments) {
-              const text = comment.textContent || '';
-              if (text.includes('@' + botUsername)) {
-                const userMatch = text.match(/@(\w+)/);
-                const username = userMatch && userMatch[1] !== botUsername ? userMatch[1] : 'user';
-                
-                results.push({
-                  text: text.trim().substring(0, 200),
-                  mentioner: username,
-                  hasReplyButton: !!comment.querySelector('[data-e2e="reply-button"], [class*="reply"]')
-                });
+            document.querySelectorAll('[data-e2e="comment-level-1"], [class*="comment-item"], div[class*="CommentContent"]').forEach(c => {
+              const text = c.textContent || '';
+              if (text.includes('@' + bot)) {
+                const m = text.match(/@(\w+)/);
+                results.push({ text: text.trim().substring(0, 200), mentioner: m && m[1] !== bot ? m[1] : 'user' });
               }
-            }
+            });
             return results;
           }, CONFIG.username);
 
           for (const cm of commentMentions) {
-            const mentionId = `${videoUrl}::${cm.mentioner}::${cm.text.slice(0, 30)}`;
-            if (!CONFIG.repliedMentions.has(mentionId)) {
-              mentions.push({
-                text: cm.text,
-                mentioner: cm.mentioner,
-                videoUrl: videoUrl,
-                id: mentionId,
-                source: 'own-videos'
-              });
+            const id = `${videoUrl}::${cm.mentioner}::${cm.text.slice(0, 30)}`;
+            if (!CONFIG.repliedMentions.has(id)) {
+              mentions.push({ text: cm.text, mentioner: cm.mentioner, videoUrl, id, source: 'own-videos' });
             }
           }
-
-        } catch (e) {
-          console.log(`⚠️ خطأ في فحص الفيديو:`, e.message);
-        }
+        } catch (e) { console.log(`⚠️ خطأ فيديو:`, e.message); }
       }
-
-      console.log(`🎬 فيديوهات البوت: وجد ${mentions.length} منشن`);
+      console.log(`🎬 وجد ${mentions.length} منشن`);
       return mentions;
-
-    } catch (error) {
-      console.error('❌ خطأ في مسح الفيديوهات:', error.message);
-      return [];
-    }
+    } catch (e) { console.error('❌ خطأ:', e.message); return []; }
   }
 
-  /**
-   * جلب كل المنشنات (الطرق الثلاث مع بعض)
-   */
   async getAllMentions() {
+    console.log('\n📥 ═══════════════════════════════');
+    console.log('📥 فحص المنشنات (3 طرق)...');
     console.log('📥 ═══════════════════════════════');
-    console.log('📥 فحص المنشنات الجديدة (3 طرق)...');
-    console.log('📥 ═══════════════════════════════');
 
-    let allMentions = [];
-
-    // الطريقة 1: API
-    const apiMentions = await this.fetchMentionsViaAPI();
-    allMentions = allMentions.concat(apiMentions);
-
-    // إذا API ما رجع شي، جرب الطريقة 2
-    if (allMentions.length === 0) {
-      const notifMentions = await this.findMentionsInNotificationsPage();
-      allMentions = allMentions.concat(notifMentions);
-    }
-
-    // إذا لسه ما فيه شي، جرب الطريقة 3
-    if (allMentions.length === 0) {
-      const videoMentions = await this.findMentionsInMyVideos();
-      allMentions = allMentions.concat(videoMentions);
-    }
+    let all = [];
+    all = all.concat(await this.fetchMentionsViaAPI());
+    if (all.length === 0) all = all.concat(await this.findMentionsInNotificationsPage());
+    if (all.length === 0) all = all.concat(await this.findMentionsInMyVideos());
 
     // إزالة التكرار
-    const uniqueMentions = [];
-    const seenIds = new Set();
-    for (const m of allMentions) {
-      if (!seenIds.has(m.id)) {
-        seenIds.add(m.id);
-        uniqueMentions.push(m);
-      }
+    const unique = []; const seen = new Set();
+    for (const m of all) { if (!seen.has(m.id)) { seen.add(m.id); unique.push(m); } }
+
+    // سجّل API المعترض
+    if (this.apiIntercepted.length > 0) {
+      console.log(`\n📡 API intercepted (${this.apiIntercepted.length}):`);
+      this.apiIntercepted.slice(0, 10).forEach(a => console.log(`   ${a.url.substring(0, 100)} → ${a.status}`));
     }
 
-    console.log(`\n📊 النتيجة الإجمالية: ${uniqueMentions.length} منشن جديد`);
-    for (const m of uniqueMentions) {
-      console.log(`   📬 [@${m.mentioner}]: "${m.text.substring(0, 60)}..." (via ${m.source})`);
-    }
-
-    return uniqueMentions;
+    console.log(`\n📊 النتيجة: ${unique.length} منشن`);
+    unique.forEach(m => console.log(`   📬 [@${m.mentioner}]: "${m.text.substring(0, 60)}..." (${m.source})`));
+    return unique;
   }
 
   // ===================================
-  // جلب تفاصيل الفيديو
+  // الرد
   // ===================================
 
-  async getVideoDetails(videoUrl) {
-    try {
-      await this.page.goto(videoUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 60000
-      });
-      await this.randomDelay(2000, 3000);
-
-      const description = await this.page.evaluate(() => {
-        const descEl = document.querySelector('[data-e2e="video-desc"]') ||
-                       document.querySelector('h1') ||
-                       document.querySelector('[class*="Caption"]');
-        return descEl ? descEl.textContent.trim() : '';
-      });
-
-      return { description };
-    } catch (error) {
-      return { description: '' };
-    }
-  }
-
-  // ===================================
-  // الرد على التعليقات
-  // ===================================
-
-  /**
-   * الرد على تعليق المنشن
-   * v8.6: الضغط على الإشعار بدل التنقل المباشر (لتجنب 403)
-   */
   async replyToMention(mention) {
     console.log(`\n💬 الرد على @${mention.mentioner}...`);
-
     try {
-      // v8.6: إذا المنشن من صفحة الإشعارات، نرجع للإشعارات ونضغط على الرابط
-      // هذا يمنع HTTP 403 من تيك توك
-      if (mention.source === 'notifications-page' && mention.videoUrl) {
-        console.log('🔗 الرجوع لصفحة الإشعارات والضغط على الرابط...');
-        
-        // الرجوع لصفحة الإشعارات
-        await this.page.goto('https://www.tiktok.com/inbox?is_from_webapp=1&webapp_id=1988', {
-          waitUntil: 'networkidle2',
-          timeout: 60000
-        });
-        await this.randomDelay(2000, 3000);
-
-        // الضغط على رابط الإشعار اللي فيه المنشن
-        const clicked = await this.clickNotificationLink(mention);
-        if (clicked) {
-          await this.randomDelay(3000, 5000);
-          await this.debugScreenshot('video-from-notification');
-          
-          // فحص هل الصفحة تحملت بنجاح
-          const pageStatus = await this.page.evaluate(() => {
-            return {
-              is403: document.title?.includes('403') || document.body?.textContent?.includes('ERROR 403'),
-              isVideo: !!document.querySelector('video') || !!document.querySelector('[data-e2e="browse-video"]'),
-              title: document.title?.substring(0, 50)
-            };
-          });
-
-          console.log(`📋 حالة الصفحة: title="${pageStatus.title}", is403=${pageStatus.is403}, isVideo=${pageStatus.isVideo}`);
-
-          if (pageStatus.is403) {
-            console.log('⚠️ صفحة 403 - جرب mobile web...');
-            // جرب نسخة الموبايل
-            await this.page.goto(mention.videoUrl.replace('www.tiktok.com', 'm.tiktok.com'), {
-              waitUntil: 'networkidle2',
-              timeout: 60000
-            });
-            await this.randomDelay(3000, 5000);
-          }
-
-          if (pageStatus.isVideo || !pageStatus.is403) {
-            // محاولة الرد المباشر
-            const foundAndClickedReply = await this.findAndClickReply(mention);
-            
-            if (foundAndClickedReply) {
-              const reply = await createAIResponse(mention.text, '', mention.mentioner);
-              console.log(`💬 الرد: "${reply}"`);
-              const submitted = await this.writeAndSubmitReply(reply);
-              if (submitted) {
-                CONFIG.repliedMentions.add(mention.id);
-                console.log('✅ تم نشر الرد! 🎉');
-                return true;
-              }
-            }
-
-            // إذا فشل الرد المباشر، جرب تعليق جديد
-            console.log('⚠️ فشل الرد المباشر - جرب تعليق جديد...');
-            const reply = await createAIResponse(mention.text, '', mention.mentioner);
-            const posted = await this.postNewComment(null, reply);
-            if (posted) {
-              CONFIG.repliedMentions.add(mention.id);
-              console.log('✅ تم نشر تعليق جديد! 🎉');
-              return true;
-            }
-          }
-        }
-      }
-
-      // الطريقة القديمة: التنقل المباشر (fallback)
       if (mention.videoUrl) {
-        console.log(`🔗 التنقل المباشر للفيديو: ${mention.videoUrl}`);
-        await this.page.goto(mention.videoUrl, {
-          waitUntil: 'networkidle2',
-          timeout: 60000
-        });
+        await this.page.goto(mention.videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         await this.randomDelay(3000, 5000);
-        await this.debugScreenshot('video-direct');
 
-        // فحص 403
-        const is403 = await this.page.evaluate(() => 
-          document.title?.includes('403') || document.body?.textContent?.includes('ERROR 403')
-        );
-        if (is403) {
-          console.log('❌ HTTP 403 - تم حظر الوصول');
-          return false;
-        }
+        const is403 = await this.page.evaluate(() => document.title?.includes('403'));
+        if (is403) { console.log('❌ 403'); return false; }
 
-        const foundAndClickedReply = await this.findAndClickReply(mention);
-        if (foundAndClickedReply) {
+        if (await this.findAndClickReply(mention)) {
           const reply = await createAIResponse(mention.text, '', mention.mentioner);
-          const submitted = await this.writeAndSubmitReply(reply);
-          if (submitted) {
+          console.log(`💬 الرد: "${reply}"`);
+          if (await this.writeAndSubmitReply(reply)) {
             CONFIG.repliedMentions.add(mention.id);
             console.log('✅ تم نشر الرد! 🎉');
             return true;
           }
         }
 
+        // تعليق جديد كـ fallback
+        console.log('⚠️ فشل الرد المباشر - تعليق جديد...');
         const reply = await createAIResponse(mention.text, '', mention.mentioner);
-        const posted = await this.postNewComment(null, reply);
-        if (posted) {
+        if (await this.postNewComment(null, reply)) {
           CONFIG.repliedMentions.add(mention.id);
-          console.log('✅ تم نشر تعليق جديد! 🎉');
+          console.log('✅ تعليق جديد! 🎉');
           return true;
         }
       }
-
       return false;
-
-    } catch (error) {
-      console.error('❌ خطأ في الرد:', error.message);
-      return false;
-    }
+    } catch (e) { console.error('❌ خطأ:', e.message); return false; }
   }
 
-  /**
-   * الضغط على رابط إشعار المنشن في صفحة الإشعارات
-   */
-  async clickNotificationLink(mention) {
-    try {
-      // البحث عن رابط الإشعار والضغط عليه
-      const clicked = await this.page.evaluate((videoUrl) => {
-        // دور الرابط اللي يطابق URL الفيديو
-        const allLinks = document.querySelectorAll('a[href*="/video/"]');
-        for (const a of allLinks) {
-          if (a.href === videoUrl || a.href.includes(videoUrl.split('/video/')[1]?.split('?')[0])) {
-            a.click();
-            return true;
-          }
-        }
-        
-        // إذا ما لقيناه، جرب الضغط على أول رابط فيه "mentioned"
-        const allAnchors = document.querySelectorAll('a');
-        for (const a of allAnchors) {
-          const text = a.textContent || '';
-          if (text.includes('mentioned') || text.includes('منشن')) {
-            a.click();
-            return true;
-          }
-        }
-        
-        return false;
-      }, mention.videoUrl);
-
-      if (clicked) {
-        console.log('✅ تم الضغط على رابط الإشعار');
-        await this.randomDelay(2000, 3000);
-        return true;
-      }
-
-      console.log('⚠️ لم أجد رابط الإشعار للضغط');
-      return false;
-
-    } catch (error) {
-      console.error('❌ خطأ في الضغط على الإشعار:', error.message);
-      return false;
-    }
-  }
-
-  /**
-   * البحث عن تعليق المنشن والضغط على زر الرد
-   * v8.5: محسّن مع تحميل أفضل للتعليقات
-   */
   async findAndClickReply(mention) {
     try {
-      // فتح قسم التعليقات إذا كان مغلق
       const commentBtn = await this.page.$('[data-e2e="comment-button"]');
-      if (commentBtn) {
-        await commentBtn.click();
-        await this.randomDelay(3000, 5000);
-        console.log('✅ تم فتح قسم التعليقات');
-      }
+      if (commentBtn) { await commentBtn.click(); await this.randomDelay(3000, 5000); }
 
-      // تمرير لتحميل التعليقات
       for (let i = 0; i < 3; i++) {
-        await this.page.evaluate(() => {
-          const container = document.querySelector('[class*="comment"]') || document.querySelector('[data-e2e="comment-list"]');
-          if (container) container.scrollTop = container.scrollHeight;
-          window.scrollBy(0, 500);
-        });
+        await this.page.evaluate(() => { window.scrollBy(0, 500); });
         await this.randomDelay(1000, 2000);
       }
+      await this.debugScreenshot('comments');
 
-      await this.debugScreenshot('comments-section');
-
-      // البحث عن التعليق اللي فيه منشن البوت
-      const replyClicked = await this.page.evaluate((botUsername) => {
-        // كل التعليقات المحتملة
-        const commentSelectors = [
-          '[data-e2e="comment-level-1"]',
-          '[class*="comment-item"]', 
-          '[class*="CommentItem"]',
-          '[class*="CommentContent"]',
-          '[class*="comment-content"]',
-          'div[class*="comment"]'
-        ];
-
-        for (const selector of commentSelectors) {
-          const comments = document.querySelectorAll(selector);
-          for (const comment of comments) {
-            const text = comment.textContent || '';
-            
-            if (text.includes('@' + botUsername)) {
-              // دور زر الرد
-              const replyBtn = comment.querySelector('[data-e2e="reply-button"]') ||
-                             comment.querySelector('[class*="reply"]') ||
-                             comment.querySelector('[class*="Reply"]') ||
-                             comment.querySelector('span[class*="reply"]');
-              
-              if (replyBtn) {
-                replyBtn.click();
-                return { found: true, commentText: text.substring(0, 150) };
-              }
+      const clicked = await this.page.evaluate((bot) => {
+        for (const sel of ['[data-e2e="comment-level-1"]', '[class*="comment-item"]', '[class*="CommentContent"]', 'div[class*="comment"]']) {
+          for (const c of document.querySelectorAll(sel)) {
+            if ((c.textContent || '').includes('@' + bot)) {
+              const btn = c.querySelector('[data-e2e="reply-button"]') || c.querySelector('[class*="reply"]');
+              if (btn) { btn.click(); return { found: true, text: c.textContent.substring(0, 100) }; }
             }
           }
         }
-
-        // طريقة بديلة: دور كل أزرار الرد واضغط على اللي قريب من @botUsername
-        const allReplyBtns = document.querySelectorAll('[data-e2e="reply-button"]');
-        for (const btn of allReplyBtns) {
-          const parent = btn.closest('div');
-          if (parent && parent.textContent?.includes('@' + botUsername)) {
-            btn.click();
-            return { found: true, commentText: parent.textContent.substring(0, 150) };
-          }
+        // fallback
+        for (const btn of document.querySelectorAll('[data-e2e="reply-button"]')) {
+          const p = btn.closest('div');
+          if (p?.textContent?.includes('@' + bot)) { btn.click(); return { found: true, text: p.textContent.substring(0, 100) }; }
         }
-
         return { found: false };
       }, CONFIG.username);
 
-      if (replyClicked.found) {
-        console.log(`✅ وجدت التعليق وضغطت رد: "${replyClicked.commentText}"`);
-        await this.randomDelay(1000, 2000);
-        return true;
-      }
-
-      console.log('⚠️ لم أجد التعليق أو زر الرد');
+      if (clicked.found) { console.log(`✅ ضغطت رد: "${clicked.text}"`); await this.randomDelay(1000, 2000); return true; }
+      console.log('⚠️ لم أجد زر الرد');
       return false;
-
-    } catch (error) {
-      console.error('❌ خطأ في البحث عن التعليق:', error.message);
-      return false;
-    }
+    } catch (e) { console.error('❌ خطأ:', e.message); return false; }
   }
 
-  /**
-   * كتابة وإرسال الرد في خانة الرد
-   * v8.5: محسّن مع selectors أكثر
-   */
   async writeAndSubmitReply(replyText) {
     try {
-      // البحث عن خانة الرد - عدة محاولات
-      const replySelectors = [
-        'textarea[placeholder*="reply" i]',
-        'textarea[placeholder*="رد" i]',
-        'textarea[placeholder*="Add a reply" i]',
-        'div[contenteditable="true"]',
-        'textarea[class*="reply"]',
-        'textarea[class*="Reply"]',
-        '[data-e2e="reply-input"] textarea',
-        '[data-e2e="reply-input"]',
-        'textarea'
+      const selectors = [
+        'textarea[placeholder*="reply" i]', 'textarea[placeholder*="رد" i]',
+        'div[contenteditable="true"]', '[data-e2e="reply-input"] textarea',
+        '[data-e2e="reply-input"]', 'textarea'
       ];
+      let input = null;
+      for (const s of selectors) { input = await this.page.$(s); if (input) break; }
+      if (!input) { console.log('⚠️ لا خانة رد'); await this.debugScreenshot('no-reply'); return false; }
 
-      let replyInput = null;
-      for (const selector of replySelectors) {
-        replyInput = await this.page.$(selector);
-        if (replyInput) {
-          console.log(`✅ وجدت خانة الرد: ${selector}`);
-          break;
-        }
-      }
-
-      if (!replyInput) {
-        console.log('⚠️ لم أجد خانة الرد بكل السيلكتورات');
-        await this.debugScreenshot('no-reply-input');
-        return false;
-      }
-
-      // الضغط على الخانة
-      await replyInput.click();
+      await input.click();
       await this.randomDelay(500, 1000);
-
-      // كتابة الرد حرف بحرف (طبيعي)
       await this.page.keyboard.type(replyText, { delay: 30 + Math.random() * 70 });
       await this.randomDelay(500, 1000);
 
-      // إرسال الرد
-      const submitSelectors = [
-        '[data-e2e="comment-submit"]',
-        'button[type="submit"]',
-        '[class*="comment-post"]',
-        '[data-e2e="reply-submit"]',
-        'button[class*="submit"]'
-      ];
-
+      const submitSelectors = ['[data-e2e="comment-submit"]', 'button[type="submit"]', '[class*="comment-post"]'];
       let submitted = false;
-      for (const selector of submitSelectors) {
-        const btn = await this.page.$(selector);
-        if (btn) {
-          await btn.click();
-          submitted = true;
-          console.log(`✅ تم الضغط على زر الإرسال: ${selector}`);
-          break;
-        }
-      }
-
-      if (!submitted) {
-        await this.page.keyboard.press('Enter');
-        console.log('✅ تم إرسال بالضغط على Enter');
-      }
+      for (const s of submitSelectors) { const btn = await this.page.$(s); if (btn) { await btn.click(); submitted = true; break; } }
+      if (!submitted) await this.page.keyboard.press('Enter');
 
       await this.randomDelay(2000, 3000);
       await this.debugScreenshot('after-reply');
-      console.log(`✅ تم إرسال الرد: "${replyText}"`);
+      console.log(`✅ تم إرسال: "${replyText}"`);
       return true;
-
-    } catch (error) {
-      console.error('❌ خطأ في كتابة الرد:', error.message);
-      return false;
-    }
+    } catch (e) { console.error('❌ خطأ:', e.message); return false; }
   }
 
-  /**
-   * نشر تعليق جديد (بديل إذا فشل الرد المباشر)
-   * v8.5: محسّن مع فتح قسم التعليقات
-   */
   async postNewComment(videoUrl, comment) {
     try {
-      await this.page.goto(videoUrl, {
-        waitUntil: 'networkidle2',
-        timeout: 60000
-      });
-      await this.randomDelay(3000, 5000);
-
-      // فتح قسم التعليقات
+      if (videoUrl) {
+        await this.page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await this.randomDelay(3000, 5000);
+      }
       const commentBtn = await this.page.$('[data-e2e="comment-button"]');
-      if (commentBtn) {
-        await commentBtn.click();
-        await this.randomDelay(2000, 3000);
-        console.log('✅ تم فتح قسم التعليقات');
-      }
+      if (commentBtn) { await commentBtn.click(); await this.randomDelay(2000, 3000); }
 
-      await this.debugScreenshot('comment-section');
-
-      // البحث عن خانة التعليق
-      const commentSelectors = [
-        '[data-e2e="comment-input"] textarea',
-        '[data-e2e="comment-input"]',
-        'textarea[placeholder*="comment" i]',
-        'textarea[placeholder*="تعليق" i]',
-        'textarea[placeholder*="Add a comment" i]',
-        'div[contenteditable="true"]',
-        'textarea[placeholder]',
-        'textarea'
+      const selectors = [
+        '[data-e2e="comment-input"] textarea', '[data-e2e="comment-input"]',
+        'textarea[placeholder*="comment" i]', 'div[contenteditable="true"]', 'textarea'
       ];
+      let input = null;
+      for (const s of selectors) { input = await this.page.$(s); if (input) break; }
+      if (!input) { console.log('❌ لا خانة تعليق'); return false; }
 
-      let commentInput = null;
-      for (const selector of commentSelectors) {
-        commentInput = await this.page.$(selector);
-        if (commentInput) {
-          console.log(`✅ وجدت خانة التعليق: ${selector}`);
-          break;
-        }
-      }
-
-      if (!commentInput) {
-        console.log('❌ لم أجد خانة التعليق بكل السيلكتورات');
-        await this.debugScreenshot('no-comment-input');
-        return false;
-      }
-
-      await commentInput.click();
+      await input.click();
       await this.randomDelay(500, 1000);
-
       await this.page.keyboard.type(comment, { delay: 30 + Math.random() * 70 });
       await this.randomDelay(500, 1000);
 
-      const submitSelectors = [
-        '[data-e2e="comment-submit"]',
-        'button[type="submit"]',
-        '[class*="comment-post"]'
-      ];
-
+      const submitSelectors = ['[data-e2e="comment-submit"]', 'button[type="submit"]', '[class*="comment-post"]'];
       let submitted = false;
-      for (const selector of submitSelectors) {
-        const btn = await this.page.$(selector);
-        if (btn) {
-          await btn.click();
-          submitted = true;
-          break;
-        }
-      }
-
-      if (!submitted) {
-        await this.page.keyboard.press('Enter');
-      }
+      for (const s of submitSelectors) { const btn = await this.page.$(s); if (btn) { await btn.click(); submitted = true; break; } }
+      if (!submitted) await this.page.keyboard.press('Enter');
 
       await this.randomDelay(2000, 3000);
-      await this.debugScreenshot('after-comment');
-      console.log(`✅ تم نشر التعليق: "${comment}"`);
+      console.log(`✅ تعليق: "${comment}"`);
       return true;
-
-    } catch (error) {
-      console.error('❌ خطأ في نشر التعليق:', error.message);
-      return false;
-    }
+    } catch (e) { console.error('❌ خطأ:', e.message); return false; }
   }
 
-  // ===================================
-  // أدوات مساعدة
-  // ===================================
-
   async randomDelay(min = 1000, max = 3000) {
-    const delay = min + Math.random() * (max - min);
-    return new Promise(resolve => setTimeout(resolve, delay));
+    return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
   }
 
   async close() {
-    if (this.browser) {
-      await this.browser.close();
-      console.log('🔒 تم إغلاق المتصفح');
-    }
+    if (this.browser) { await this.browser.close(); console.log('🔒 إغلاق المتصفح'); }
   }
 }
 
@@ -1505,8 +830,8 @@ async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║      🤖 بوت تيك توك الذكي v8.0          ║
-║      Stealth API + 3 طرق كشف            ║
+║      🤖 بوت تيك توك الذكي v9.0          ║
+║      Anti-Detect + API Interception      ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
   `);
@@ -1515,89 +840,51 @@ async function main() {
 
   try {
     await bot.init();
-
-    // تسجيل الدخول
-    let loggedIn = false;
-
-    if (CONFIG.sessionCookie) {
-      loggedIn = await bot.loginWithCookies();
-    }
-
-    if (!loggedIn && CONFIG.username && CONFIG.password) {
-      loggedIn = await bot.loginWithPassword();
-    }
-
-    // بعد تسجيل الدخول، ارجع للصفحة الرئيسية عشان API يشتغل صح
-    if (loggedIn) {
-      console.log('🏠 العودة للصفحة الرئيسية...');
-      await bot.page.goto('https://www.tiktok.com', {
-        waitUntil: 'networkidle2',
-        timeout: 60000
-      });
-      await bot.randomDelay(2000, 3000);
-    }
+    const loggedIn = await bot.login();
 
     if (!loggedIn) {
-      console.log('');
-      console.log('═══════════════════════════════════════');
+      console.log('\n═══════════════════════════════════════');
       console.log('❌ فشل تسجيل الدخول!');
-      console.log('');
       console.log('تأكد من:');
       console.log('1. كوكيز الجلسة في TIKTOK_SESSION');
-      console.log('   كيفية الحصول عليها:');
-      console.log('   - افتح تيك توك في المتصفح');
-      console.log('   - افتح DevTools > Network > أي طلب');
-      console.log('   - انسخ قيمة Cookie من Headers');
-      console.log('');
-      console.log('2. أو بيانات الدخول:');
-      console.log('   TIKTOK_USERNAME و TIKTOK_PASSWORD');
+      console.log('   - افتح تيك توك > DevTools > Network');
+      console.log('   - انسخ قيمة Cookie من Request Headers');
+      console.log('2. أو TIKTOK_USERNAME و TIKTOK_PASSWORD');
       console.log('═══════════════════════════════════════');
       await bot.close();
       return;
     }
 
-    // فحص المنشنات
     const singleRun = process.env.SINGLE_RUN === 'true';
-
     do {
       try {
         const mentions = await bot.getAllMentions();
-
         for (const mention of mentions.slice(0, CONFIG.maxRepliesPerRun)) {
           console.log(`\n📬 ═══════════════════════════════`);
-          console.log(`📬 منشن جديد من @${mention.mentioner} (via ${mention.source})`);
-          console.log(`📬 النص: "${mention.text.substring(0, 80)}..."`);
+          console.log(`📬 منشن من @${mention.mentioner} (${mention.source})`);
+          console.log(`📬 "${mention.text.substring(0, 80)}..."`);
           console.log(`📬 ═══════════════════════════════`);
 
-          const replied = await bot.replyToMention(mention);
-
-          if (replied) {
-            const delaySec = CONFIG.minDelayBetweenReplies +
-              Math.random() * (CONFIG.maxDelayBetweenReplies - CONFIG.minDelayBetweenReplies);
-            console.log(`⏳ انتظار ${Math.round(delaySec)} ثانية...`);
-            await bot.randomDelay(delaySec * 1000, delaySec * 1000);
+          if (await bot.replyToMention(mention)) {
+            const delay = CONFIG.minDelayBetweenReplies + Math.random() * (CONFIG.maxDelayBetweenReplies - CONFIG.minDelayBetweenReplies);
+            console.log(`⏳ انتظار ${Math.round(delay)} ثانية...`);
+            await bot.randomDelay(delay * 1000, delay * 1000);
           }
         }
-
-        if (mentions.length === 0) {
-          console.log('📭 لا يوجد منشنات جديدة');
-        }
-
+        if (mentions.length === 0) console.log('📭 لا يوجد منشنات جديدة');
         if (!singleRun) {
-          const checkInterval = parseInt(process.env.CHECK_INTERVAL) || 60;
-          console.log(`\n⏱️ الفحص القادم بعد ${checkInterval} ثانية...`);
-          await bot.randomDelay(checkInterval * 1000, checkInterval * 1000);
+          const interval = parseInt(process.env.CHECK_INTERVAL) || 60;
+          console.log(`\n⏱️ الفحص القادم بعد ${interval} ثانية...`);
+          await bot.randomDelay(interval * 1000, interval * 1000);
         }
-
-      } catch (error) {
-        console.error('❌ خطأ في حلقة المراقبة:', error.message);
+      } catch (e) {
+        console.error('❌ خطأ:', e.message);
         if (singleRun) break;
         await bot.randomDelay(30000, 60000);
       }
     } while (!singleRun);
-
-  } catch (error) {
-    console.error('💥 خطأ فادح:', error.message);
+  } catch (e) {
+    console.error('💥 خطأ فادح:', e.message);
   } finally {
     await bot.close();
   }
@@ -1605,5 +892,4 @@ async function main() {
 
 export { TikTokBot, createAIResponse, CONFIG };
 export default main;
-
 main().catch(console.error);
