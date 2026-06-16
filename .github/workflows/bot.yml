@@ -60,7 +60,7 @@ jobs:
           echo "Contents:"
           cat .z-ai-config
 
-      - name: Run TikTok Bot v10.2
+      - name: Run TikTok Bot v10.3
         env:
           TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
           TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}

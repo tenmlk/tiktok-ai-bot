@@ -582,7 +582,18 @@ class TikTokBot {
       const msToken = await this.getMsToken();
       console.log(`🔑 msToken: ${msToken ? msToken.substring(0, 20) + '...' : 'غير موجود'}`);
 
-      // الطريقة 1: API تعليق مباشر (أفضل طريقة - بدون فتح صفحة!)
+      // v10.3: DOM أولاً (لأن API يحتاج X-Bogus اللي ما نقدر نولده)
+      // الطريقة 1: افتح صفحة الفيديو ورد عبر DOM
+      if (mention.videoUrl || mention.videoId) {
+        const posted = await this.replyViaDOM(mention, replyText);
+        if (posted) {
+          CONFIG.repliedMentions.add(mention.id);
+          console.log('✅ تم نشر الرد عبر DOM! 🎉');
+          return true;
+        }
+      }
+
+      // الطريقة 2: API تعليق (fallback - يحتاج X-Bogus عشان يشتغل)
       if (mention.videoId) {
         const posted = await this.replyViaAPI(mention, replyText, msToken);
         if (posted) {
@@ -592,23 +603,12 @@ class TikTokBot {
         }
       }
 
-      // الطريقة 2: API تعليق جديد على الفيديو
+      // الطريقة 3: API تعليق جديد
       if (mention.videoId) {
         const posted = await this.commentViaAPI(mention, replyText, msToken);
         if (posted) {
           CONFIG.repliedMentions.add(mention.id);
           console.log('✅ تم نشر تعليق جديد عبر API! 🎉');
-          return true;
-        }
-      }
-
-      // الطريقة 3 (fallback): افتح صفحة الفيديو وحاول ترد (مع حل الكابتشا)
-      console.log('⚠️ API فشلت، جرب DOM fallback...');
-      if (mention.videoUrl) {
-        const posted = await this.replyViaDOM(mention, replyText);
-        if (posted) {
-          CONFIG.repliedMentions.add(mention.id);
-          console.log('✅ تم نشر الرد عبر DOM! 🎉');
           return true;
         }
       }
@@ -724,11 +724,12 @@ class TikTokBot {
         if (result.status === 200) {
           try {
             const json = JSON.parse(result.body);
-            if (json.status_code === 0 || json.comment) {
-              console.log('✅ تعليق عبر API ناجح!');
+            // v10.3: فقط اعتبره نجاح إذا فعلاً رجع كائن comment
+            if (json.comment && json.comment.cid) {
+              console.log('✅ تعليق عبر API ناجح! commentId=' + json.comment.cid);
               return true;
             }
-            console.log(`⚠️ API status_code=${json.status_code} status_msg=${json.status_msg}`);
+            console.log(`⚠️ API status_code=${json.status_code} status_msg=${json.status_msg} - لم ينشر التعليق فعلياً`);
           } catch (e) {}
         }
       }
@@ -737,26 +738,33 @@ class TikTokBot {
   }
 
   // ===================================
-  // v10.0: Fallback - رد عبر DOM
-  // (يفتح صفحة الفيديو فقط إذا API فشلت)
+  // v10.3: Fallback - رد عبر DOM
+  // يستخدم mobile UA وانتقال طبيعي لتجنب الكابتشا
   // ===================================
   async replyViaDOM(mention, replyText) {
-    console.log('🖥️ الطريقة 3: DOM fallback (فتح صفحة الفيديو)...');
+    console.log('🖥️ الطريقة 3: DOM (فتح صفحة الفيديو)...');
     try {
-      await this.page.goto(mention.videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-      await this.randomDelay(3000, 5000);
-
-      // حل الكابتشا إذا ظهرت
-      await this.solveCaptcha();
-
-      const is403 = await this.page.evaluate(() => document.title?.includes('403'));
-      if (is403) {
-        console.log('⚠️ 403 - جرب mobile...');
-        await this.page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15');
-        if (CONFIG.sessionCookie) await this.page.setCookie(...this.parseCookies(CONFIG.sessionCookie));
-        await this.page.goto(mention.videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        await this.randomDelay(3000, 5000);
+      // v10.3: غير الـ UA لموبايل عشان تقليل فرصة الكابتشا
+      await this.page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
+      if (CONFIG.sessionCookie) await this.page.setCookie(...this.parseCookies(CONFIG.sessionCookie));
+      
+      // افتح صفحة الفيديو
+      const videoUrl = mention.videoUrl || `https://www.tiktok.com/@/video/${mention.videoId}`;
+      console.log(`🔗 فتح: ${videoUrl}`);
+      await this.page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await this.randomDelay(5000, 8000);
+      
+      // حل الكابتشا إذا ظهرت (عدة محاولات)
+      for (let attempt = 1; attempt <= 3; attempt++) {
         await this.solveCaptcha();
+        const hasCaptcha = await this.page.evaluate(() => {
+          const text = document.body?.textContent || '';
+          return text.includes('اسحب') || text.includes('slider') || text.includes('Drag') || 
+                 !!document.querySelector('[class*="captcha"]');
+        });
+        if (!hasCaptcha) break;
+        console.log(`⚠️ كابتشا لسه موجودة (محاولة ${attempt}/3)`);
+        await this.randomDelay(3000, 5000);
       }
 
       await this.debugScreenshot('video-page-dom');
@@ -968,8 +976,8 @@ async function main() {
   console.log(`
 ╔══════════════════════════════════════════╗
 ║                                          ║
-║      🤖 بوت تيك توك الذكي v10.2         ║
-║      API + msToken + CSRF               ║
+║      🤖 بوت تيك توك الذكي v10.3         ║
+║      DOM-First + API Fallback            ║
 ║                                          ║
 ╚══════════════════════════════════════════╝
   `);
