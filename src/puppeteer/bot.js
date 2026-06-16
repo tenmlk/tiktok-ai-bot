@@ -553,14 +553,12 @@ class TikTokBot {
     console.log('📡 الطريقة 1: جلب المنشنات عبر API...');
 
     try {
-      // التأكد إننا في تيك توك
-      if (!this.page.url().includes('tiktok.com')) {
-        await this.page.goto('https://www.tiktok.com', {
-          waitUntil: 'domcontentloaded',
-          timeout: 30000
-        });
-        await this.randomDelay(2000, 3000);
-      }
+      // دائماً اروح للصفحة الرئيسية أولاً - مهم عشان API يشتغل!
+      await this.page.goto('https://www.tiktok.com', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+      await this.randomDelay(2000, 3000);
 
       const mentions = [];
 
@@ -1266,6 +1264,16 @@ async function main() {
 
     if (!loggedIn && CONFIG.username && CONFIG.password) {
       loggedIn = await bot.loginWithPassword();
+    }
+
+    // بعد تسجيل الدخول، ارجع للصفحة الرئيسية عشان API يشتغل صح
+    if (loggedIn) {
+      console.log('🏠 العودة للصفحة الرئيسية...');
+      await bot.page.goto('https://www.tiktok.com', {
+        waitUntil: 'networkidle2',
+        timeout: 60000
+      });
+      await bot.randomDelay(2000, 3000);
     }
 
     if (!loggedIn) {
