@@ -557,7 +557,7 @@ class TikTokBot {
               }
 
               const data = JSON.parse(jsonText);
-              return { data, group: groupNum };
+              return { data, group: groupNum, rawKeys: Object.keys(data) };
             } catch (e) {
               return { error: e.message };
             }
@@ -569,21 +569,71 @@ class TikTokBot {
           }
 
           if (result.data) {
-            console.log(`✅ API group=${group} رجع بيانات!`);
-            const noticeList = result.data.notice_list || result.data.notifications || [];
+            console.log(`✅ API group=${group} رجع بيانات! Keys: ${result.rawKeys?.join(', ')}`);
+
+            // تسجيل هيكل البيانات للتصحيح
+            const dataStr = JSON.stringify(result.data).substring(0, 500);
+            console.log(`📋 API raw preview: ${dataStr}`);
+
+            // محاولة استخراج القائمة بعدة طرق
+            let noticeList = result.data.notice_list || result.data.notifications || 
+                            result.data.data?.notice_list || result.data.data?.notifications ||
+                            result.data.body?.notice_list || result.data.body?.notifications || [];
+
+            // إذا القائمة فاضية، شوف إذا البيانات نفسها عبارة عن مصفوفة
+            if (!Array.isArray(noticeList) || noticeList.length === 0) {
+              // جرب الدخول أعمق
+              for (const key of Object.keys(result.data)) {
+                const val = result.data[key];
+                if (Array.isArray(val) && val.length > 0) {
+                  console.log(`📋 Found array at key: ${key} (${val.length} items)`);
+                  noticeList = val;
+                  break;
+                }
+                if (val && typeof val === 'object' && !Array.isArray(val)) {
+                  for (const subKey of Object.keys(val)) {
+                    if (Array.isArray(val[subKey]) && val[subKey].length > 0) {
+                      console.log(`📋 Found array at ${key}.${subKey} (${val[subKey].length} items)`);
+                      noticeList = val[subKey];
+                      break;
+                    }
+                  }
+                  if (noticeList.length > 0) break;
+                }
+              }
+            }
+
+            console.log(`📋 عدد الإشعارات: ${noticeList.length}`);
+
+            // إذا لسه ما لقينا شي، سجّل أول عنصر لو موجود
+            if (noticeList.length > 0) {
+              const sampleStr = JSON.stringify(noticeList[0]).substring(0, 300);
+              console.log(`📋 عينة إشعار: ${sampleStr}`);
+            }
 
             for (const notice of noticeList) {
               try {
-                const content = notice.content || notice.title || notice.body || '';
-                const username = notice.from_user?.unique_id || notice.from_user?.nickname || notice.user?.unique_id || '';
-                const videoUrl = notice.target_url || notice.url || notice.link || '';
-                const commentText = notice.comment?.text || notice.content || '';
+                // استخراج النص بكل الطرق الممكنة
+                const content = notice.content || notice.title || notice.body || notice.text || '';
+                const username = notice.from_user?.unique_id || notice.from_user?.nickname || 
+                               notice.user?.unique_id || notice.user?.nickname ||
+                               notice.author?.unique_id || notice.from?.unique_id || '';
+                const videoUrl = notice.target_url || notice.url || notice.link || 
+                               notice.target?.url || notice.extra?.url || '';
+                const commentText = notice.comment?.text || notice.comment?.content || 
+                                   notice.content || notice.body || '';
+                const noticeType = notice.type || notice.sub_type || notice.action_type || '';
 
-                // تحقق إنه منشن
-                if (content.includes('@' + CONFIG.username) || 
+                console.log(`📋 إشعار: type=${noticeType}, user=@${username}, url=${videoUrl}, content=${(commentText || content).substring(0, 60)}`);
+
+                // تحقق إنه منشن - بطريقة مرنة
+                const isMention = content.includes('@' + CONFIG.username) || 
                     commentText.includes('@' + CONFIG.username) ||
-                    notice.type === 'mention' || notice.sub_type === 'mention') {
+                    noticeType === 'mention' || noticeType === 'mention_comment' || 
+                    noticeType === '3' || noticeType === 3 ||
+                    String(noticeType).includes('mention');
                   
+                if (isMention) {
                   const mentionId = notice.id || notice.create_time || (videoUrl + commentText).slice(0, 50);
                   
                   if (!CONFIG.repliedMentions.has(String(mentionId))) {
@@ -595,9 +645,12 @@ class TikTokBot {
                       source: 'api',
                       group: group
                     });
+                    console.log(`📬 منشن موجود! @${username}: ${(commentText || content).substring(0, 60)}`);
                   }
                 }
-              } catch (e) {}
+              } catch (e) {
+                console.log(`⚠️ خطأ في تحليل إشعار: ${e.message}`);
+              }
             }
           }
         } catch (e) {
@@ -711,20 +764,54 @@ class TikTokBot {
       await this.randomDelay(3000, 5000);
       await this.debugScreenshot('bot-profile');
 
-      // جلب روابط الفيديوهات
-      const videoLinks = await this.page.evaluate(() => {
+      // جلب روابط الفيديوهات - بطريقة محسنة
+      let videoLinks = await this.page.evaluate(() => {
         const links = [];
-        const items = document.querySelectorAll('a[href*="/video/"], div[data-e2e="user-post-item"] a');
-        for (const item of items) {
-          const href = item.href || item.querySelector('a')?.href || '';
-          if (href.includes('/video/')) {
-            links.push(href);
+        // الطريقة 1: روابط الفيديو المباشرة
+        const allAnchors = document.querySelectorAll('a');
+        for (const a of allAnchors) {
+          if (a.href && a.href.includes('/video/')) {
+            links.push(a.href);
           }
         }
-        return [...new Set(links)].slice(0, 5); // أول 5 فيديوهات
+        // الطريقة 2: عناصر البوست
+        const postItems = document.querySelectorAll('[data-e2e="user-post-item"], [data-e2e="user-post-item-list"]');
+        for (const item of postItems) {
+          const a = item.querySelector('a') || item.closest('a');
+          if (a && a.href) {
+            links.push(a.href);
+          }
+        }
+        return [...new Set(links)].slice(0, 5);
       });
 
+      // إذا ما لقينا فيديوهات، جرب التمرير لتحميلها
+      if (videoLinks.length === 0) {
+        console.log('⏳ لم أجد فيديوهات - أحاول التمرير...');
+        await this.page.evaluate(() => window.scrollBy(0, 1000));
+        await this.randomDelay(2000, 3000);
+        await this.debugScreenshot('profile-scrolled');
+        
+        videoLinks = await this.page.evaluate(() => {
+          const links = [];
+          const allAnchors = document.querySelectorAll('a');
+          for (const a of allAnchors) {
+            if (a.href && a.href.includes('/video/')) {
+              links.push(a.href);
+            }
+          }
+          return [...new Set(links)].slice(0, 5);
+        });
+      }
+
       console.log(`🎬 وجد ${videoLinks.length} فيديو في البروفايل`);
+      
+      // سجّل كل الروابط اللي لقيناها
+      if (videoLinks.length === 0) {
+        // احفظ HTML للتحليل
+        await this.debugHTML('profile-page');
+        console.log('📄 تم حفظ HTML البروفايل للتحليل');
+      }
 
       const mentions = [];
 
