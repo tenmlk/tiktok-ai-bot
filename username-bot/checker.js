@@ -1,5 +1,12 @@
-// Username availability checker — fast version for GitHub Actions
-// Uses Z.ai page_reader as primary fetch (bypasses Cloudflare, geo-blocks)
+// Username availability checker — length-based random generation
+// Uses Z.ai page_reader (bypasses Cloudflare, geo-blocks)
+//
+// Rules enforced (compatible with TikTok / Snapchat / Instagram):
+//   - First char MUST be a letter
+//   - Last char MUST be a letter or digit (never '.', '_', '-')
+//   - No two consecutive symbol chars ('..', '__', '--', '._', '-_', etc.)
+//   - Allowed: [a-z] [0-9] . _ -
+//   - Length range: 2..15
 
 const ZAI = require('z-ai-web-dev-sdk').default;
 
@@ -11,7 +18,7 @@ async function getZai() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const INTER_REQUEST_MS = 2500;
+const INTER_REQUEST_MS = 2200;
 let _chain = Promise.resolve();
 function serialize(task) {
   const next = _chain.then(() => task());
@@ -38,13 +45,13 @@ async function fetchViaZai(url) {
     } catch (e) {
       const msg = String(e.message || e);
       if (msg.includes('429') || msg.toLowerCase().includes('too many requests')) {
-        const wait = 20000 * (attempt + 1);
-        console.log(`  [zai] 429, waiting ${wait/1000}s...`);
+        const wait = 18000 * (attempt + 1);
+        console.log(`  [zai] 429, waiting ${wait / 1000}s...`);
         await sleep(wait);
         continue;
       }
       if (attempt < 2) {
-        await sleep(3000);
+        await sleep(2500);
         continue;
       }
       return null;
@@ -89,7 +96,7 @@ async function checkInstagram(username) {
   return { available: null, source: 'zai-ambiguous' };
 }
 
-// Fast check: Snapchat first (cheap), skip rest if taken.
+// Fast check: Snapchat first (cheap). If taken, skip TikTok+IG entirely.
 async function checkFast(username, opts = {}) {
   const verbose = opts.verbose;
   if (verbose) console.log(`  [${username}] snap...`);
@@ -103,67 +110,72 @@ async function checkFast(username, opts = {}) {
   return { username, tiktok: tt, snapchat: sc, instagram: ig };
 }
 
-function generateCandidates(base, count = 20) {
-  const b = base.toLowerCase().replace(/[^a-z0-9_\.\-]/g, '');
-  if (!b) return [];
-  const seen = new Set();
-  const out = [];
-  const push = (u) => {
-    if (u.length < 3 || u.length > 24) return;
-    if (!/^[a-z]/.test(u)) return;
-    if (!/[a-z0-9]$/.test(u)) return;
-    if (/[\._\-]{2,}/.test(u)) return;
-    if (!seen.has(u)) { seen.add(u); out.push(u); }
-  };
+// ─── Random generator by length ───────────────────────────────────────────
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+const DIGITS = '0123456789';
+const SYMBOLS = '._-';
+const ALNUM = LETTERS + DIGITS;
+const ALL_MID = ALNUM + SYMBOLS;
 
-  push(b);
-  const rand2 = () => Math.floor(10 + Math.random() * 89);
-  const rand3 = () => Math.floor(100 + Math.random() * 899);
-  const rand4 = () => Math.floor(1000 + Math.random() * 8999);
-  const randAZ = () => String.fromCharCode(97 + Math.floor(Math.random() * 26));
-
-  for (let i = 0; i < 4; i++) push(`${b}${rand2()}`);
-  for (let i = 0; i < 3; i++) push(`${b}${rand3()}`);
-  push(`${b}${randAZ()}${randAZ()}`);
-  push(`${b}${randAZ()}${randAZ()}${randAZ()}`);
-
-  const dotWords = ['official', 'real', 'hq', 'tv', 'me', 'world', 'x', '01', '007'];
-  for (const w of dotWords) push(`${b}.${w}`);
-  const usWords = ['official', 'real', 'hq', 'tv', 'me', 'world', 'x', '01', '007'];
-  for (const w of usWords) push(`${b}_${w}`);
-  const dashWords = ['official', 'real', 'hq', 'tv', 'me', 'world', 'x'];
-  for (const w of dashWords) push(`${b}-${w}`);
-
-  const prefixes = ['the', 'its', 'real', 'iam', 'thisis', 'im', 'hey'];
-  for (const p of prefixes) {
-    push(`${p}${b}`);
-    push(`${p}_${b}`);
-    push(`${p}.${b}`);
-  }
-  push(`${b}${rand4()}${randAZ()}`);
-  push(`${b}_${randAZ()}${randAZ()}${randAZ()}`);
-
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out.slice(0, count);
+function isValidUsername(u) {
+  if (!u) return false;
+  if (u.length < 2 || u.length > 15) return false;
+  if (!/^[a-z]/.test(u)) return false;                 // starts with letter
+  if (!/[a-z0-9]$/.test(u)) return false;               // ends with letter/digit (NOT . _ -)
+  if (!/^[a-z0-9._-]+$/.test(u)) return false;          // only allowed chars
+  if (/[\._\-]{2,}/.test(u)) return false;              // no consecutive symbols
+  return true;
 }
 
-async function findAvailableStreaming(base, targetCount, opts = {}, onAvailable) {
-  const candidates = generateCandidates(base, 25);
-  if (opts.verbose) console.log(`Generated ${candidates.length} candidates: ${candidates.join(', ')}`);
+function randomFrom(str) {
+  return str[Math.floor(Math.random() * str.length)];
+}
+
+function generateOne(length) {
+  // first char: letter
+  let u = randomFrom(LETTERS);
+  for (let i = 1; i < length; i++) {
+    // if previous was a symbol, force alnum
+    const lastChar = u[u.length - 1];
+    const pool = SYMBOLS.includes(lastChar) ? ALNUM : ALL_MID;
+    u += randomFrom(pool);
+  }
+  // last char must be alnum (if not, replace)
+  if (SYMBOLS.includes(u[u.length - 1])) {
+    u = u.slice(0, -1) + randomFrom(ALNUM);
+  }
+  return u;
+}
+
+function generateByLength(length, count) {
+  if (length < 2 || length > 15) return [];
+  const out = new Set();
+  let attempts = 0;
+  const maxAttempts = count * 50;
+  while (out.size < count && attempts < maxAttempts) {
+    attempts++;
+    const u = generateOne(length);
+    if (isValidUsername(u)) out.add(u);
+  }
+  return [...out];
+}
+
+// ─── Find available usernames of a given length ──────────────────────────
+async function findAvailableByLength(length, targetCount, opts = {}, onAvailable) {
+  const batchSize = Math.max(targetCount * 3, 30);
+  const candidates = generateByLength(length, batchSize);
+  if (opts.verbose) console.log(`Generated ${candidates.length} candidates (len=${length}): ${candidates.slice(0, 10).join(', ')}${candidates.length > 10 ? '...' : ''}`);
 
   const found = [];
   let taken = 0;
   let checked = 0;
   const t0 = Date.now();
-  const TIME_BUDGET_MS = (opts.timeBudgetSec || 180) * 1000; // 3 min hard cap by default
+  const TIME_BUDGET_MS = (opts.timeBudgetSec || 240) * 1000;
 
   for (const u of candidates) {
     if (found.length >= targetCount) break;
     if (Date.now() - t0 > TIME_BUDGET_MS) {
-      if (opts.verbose) console.log(`  [time-budget] hit ${TIME_BUDGET_MS/1000}s, stopping early`);
+      if (opts.verbose) console.log(`  [time-budget] hit ${TIME_BUDGET_MS / 1000}s, stopping early (found ${found.length}/${targetCount})`);
       break;
     }
     const r = await checkFast(u, opts);
@@ -176,6 +188,7 @@ async function findAvailableStreaming(base, targetCount, opts = {}, onAvailable)
       console.log(`  ${u}: avail=[${availOn.join(',')}] taken=[${takenOn.join(',')}] ${r.__skipped ? '(skipped)' : ''}`);
     }
 
+    // Accept if at least one platform available AND none taken
     if (availOn.length >= 1 && takenOn.length === 0) {
       const item = { username: u, availableOn: availOn };
       found.push(item);
@@ -183,13 +196,13 @@ async function findAvailableStreaming(base, targetCount, opts = {}, onAvailable)
     } else if (takenOn.length > 0) {
       taken++;
     }
-    await sleep(200);
+    await sleep(150);
   }
 
   return { found, takenCount: taken, checkedCount: checked, candidatesTotal: candidates.length };
 }
 
-async function checkAllPlatforms(username, opts = {}) {
+async function checkAllPlatforms(username) {
   const tt = await checkTikTok(username);
   const sc = await checkSnapchat(username);
   const ig = await checkInstagram(username);
@@ -202,6 +215,7 @@ module.exports = {
   checkSnapchat,
   checkInstagram,
   checkFast,
-  generateCandidates,
-  findAvailableStreaming,
+  generateByLength,
+  isValidUsername,
+  findAvailableByLength,
 };

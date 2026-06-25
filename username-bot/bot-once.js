@@ -1,13 +1,14 @@
 // Run-once bot for GitHub Actions
-// - Fetches pending Telegram updates (messages)
-// - Processes each (handles /start, /help, /check, /find, plain text)
+// - Fetches pending Telegram updates
+// - Supports commands: /start /help /2 /3 /4 /5 /6 /7 /8
+//   /N -> generates 10 random usernames of length N, checks availability, streams results
 // - Replies via Telegram sendMessage API
 // - Exits cleanly so GitHub Action completes
 //
-// This is called by .github/workflows/bot.yml every 5 minutes via cron.
+// Called by .github/workflows/bot.yml every 5 minutes via cron.
 
 const axios = require('axios');
-const { findAvailableStreaming, checkAllPlatforms } = require('./checker.js');
+const { findAvailableByLength, checkAllPlatforms } = require('./checker.js');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TOKEN) {
@@ -29,53 +30,58 @@ async function tg(method, params) {
   }
 }
 
-// Per-user in-process lock (just to avoid concurrent /find from same user in one run)
-const userLocks = new Map();
-async function withLock(userId, fn) {
-  if (userLocks.has(userId)) return { __locked: true };
-  userLocks.set(userId, true);
-  try {
-    return await fn();
-  } finally {
-    userLocks.delete(userId);
-  }
-}
-
-async function handleFind(chatId, fromId, baseRaw) {
-  const base = baseRaw.toLowerCase().replace(/[^a-z0-9_\.\-]/g, '');
-  if (!base || base.length < 2) {
-    await tg('sendMessage', { chat_id: chatId, text: 'أرسل كلمة (حرفين على الأقل). مثال: cool' });
+// ─── /N handler: generate 10 random usernames of length N, check availability ──
+async function handleByLength(chatId, length) {
+  if (length < 2 || length > 8) {
+    await tg('sendMessage', {
+      chat_id: chatId,
+      text: '⚠️ الطول لازم يكون بين 2 و 8.\nمثال: /3 لليوزرات من 3 حروف.',
+    });
     return;
   }
 
   const status = await tg('sendMessage', {
     chat_id: chatId,
-    text: `🔍 أبحث عن يوزرات متاحة من "${base}"...\n✨ راح أرسل كل يوزر متاح فور ما ألقاه.`,
+    text:
+      `🔍 أبحث عن 10 يوزرات متاحة بطول ${length} حروف...\n` +
+      `✨ كل يوزر متاح يظهر فوراً.\n` +
+      `⏱️ الانتظار المتوقع: 1-4 دقائق.`,
   });
 
   let foundCount = 0;
   let checkedCount = 0;
-  const TARGET = 5;
+  const TARGET = 10;
   const t0 = Date.now();
 
   try {
-    const r = await findAvailableStreaming(base, TARGET, { verbose: true, timeBudgetSec: 150 }, async (item) => {
-      foundCount++;
-      const plat = item.availableOn.map((p) => `${PLATFORM_EMOJI[p]} ${PLATFORM_NAME[p]}`).join('  ');
-      await tg('sendMessage', {
-        chat_id: chatId,
-        text: `✅ #${foundCount} متاح:\n\n👉 <b>${item.username}</b>\n\nمتاح على: ${plat}`,
-        parse_mode: 'HTML',
-      });
-    });
+    const r = await findAvailableByLength(
+      length,
+      TARGET,
+      { verbose: true, timeBudgetSec: 240 },
+      async (item) => {
+        foundCount++;
+        const plat = item.availableOn
+          .map((p) => `${PLATFORM_EMOJI[p]} ${PLATFORM_NAME[p]}`)
+          .join('  ');
+        await tg('sendMessage', {
+          chat_id: chatId,
+          text: `✅ #${foundCount}:  <b>${item.username}</b>\nمتاح على: ${plat}`,
+          parse_mode: 'HTML',
+        });
+      }
+    );
     checkedCount = r.checkedCount;
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
     let finalText;
     if (foundCount === 0) {
-      finalText = `😔 ما لقيت يوزر متاح من "${base}" بعد فحص ${checkedCount} خيار.\nجرّب كلمة أخرى أو أطول.`;
+      finalText =
+        `😔 ما لقيت يوزر متاح بطول ${length} بعد فحص ${checkedCount} خيار.\n` +
+        `جرّب طول آخر (مثال: /4) أو حاول لاحقاً.`;
     } else {
-      finalText = `✅ تم العثور على ${foundCount} يوزر متاح في ${elapsed}s\n(فحصت ${checkedCount} خيار)`;
+      finalText =
+        `✅ تم العثور على ${foundCount} يوزر متاح في ${elapsed}s\n` +
+        `(فحصت ${checkedCount} خيار عشوائي)`;
     }
     if (status && status.result && status.result.message_id) {
       await tg('editMessageText', {
@@ -137,11 +143,19 @@ async function handleStart(chatId, name) {
       `أهلاً ${name} 👋\n\n` +
       `أنا بوت يبحث عن يوزرات متاحة على:\n  🎵 TikTok\n  👻 Snapchat\n  📸 Instagram\n\n` +
       `كيف تستخدمني؟\n` +
-      `  • أرسل أي كلمة (مثال: cool) وسأبحث عن 5 يوزرات متاحة منها\n` +
+      `  • أرسل /2 لـ 10 يوزرات من حرفين\n` +
+      `  • أرسل /3 لـ 10 يوزرات من 3 حروف\n` +
+      `  • أرسل /4 لـ 10 يوزرات من 4 حروف\n` +
+      `  • أرسل /5 ... /6 ... /7 ... /8\n` +
       `  • /check <username> للتحقق من يوزر معيّن\n` +
       `  • /help لعرض المساعدة\n\n` +
-      `⚠️ ملاحظة: البوت يعمل بنوبات كل 5 دقائق، فالرد قد يتأخر حتى 5 دقائق.\n` +
-      `⏱️ كل بحث يستغرق 30-180 ثانية، وكل 5 دقايق البوت يفحص رسائله.`,
+      `⚠️ القواعد:\n` +
+      `  • اليوزر يبدأ بحرف دائماً\n` +
+      `  • ما ينتهي بـ . _ -\n` +
+      `  • ما في رمزين متتاليين (.. __ --)\n` +
+      `  • يدعم: حروف + أرقام + . _ -\n\n` +
+      `⏱️ البوت يفحص رسائله كل 5 دقائق، فالرد قد يتأخر حتى 5 دقائق.\n` +
+      `⏱️ كل بحث يستغرق 1-4 دقائق حسب الطول.`,
   });
 }
 
@@ -163,47 +177,57 @@ async function processUpdate(update) {
         `الأوامر:\n\n` +
         `/start - ترحيب\n` +
         `/help - هذه الرسالة\n` +
-        `/find <base> - ابحث عن 5 يوزرات متاحة\n` +
+        `/2 - 10 يوزرات من حرفين\n` +
+        `/3 - 10 يوزرات من 3 حروف\n` +
+        `/4 - 10 يوزرات من 4 حروف\n` +
+        `/5 - 10 يوزرات من 5 حروف\n` +
+        `/6 - 10 يوزرات من 6 حروف\n` +
+        `/7 - 10 يوزرات من 7 حروف\n` +
+        `/8 - 10 يوزرات من 8 حروف\n` +
         `/check <username> - تحقق من يوزر معيّن\n\n` +
-        `أو أرسل أي كلمة مباشرة.`,
+        `أو أرسل رقم طول (مثال: 3) مباشرة.`,
     });
+  }
+
+  // /N where N is length (2..8)
+  const lengthMatch = text.match(/^\/(\d{1,2})$/);
+  if (lengthMatch) {
+    const length = parseInt(lengthMatch[1], 10);
+    if (length >= 2 && length <= 8) {
+      return handleByLength(chatId, length);
+    } else {
+      return tg('sendMessage', {
+        chat_id: chatId,
+        text: '⚠️ الطول لازم يكون بين 2 و 8. مثال: /3',
+      });
+    }
+  }
+
+  // Plain number → treat as length
+  const plainNumberMatch = text.match(/^(\d{1,2})$/);
+  if (plainNumberMatch) {
+    const length = parseInt(plainNumberMatch[1], 10);
+    if (length >= 2 && length <= 8) {
+      return handleByLength(chatId, length);
+    }
   }
 
   const checkMatch = text.match(/^\/check\s+(\S+)/);
   if (checkMatch) {
-    const lock = await withLock(fromId, () => handleCheck(chatId, fromId, checkMatch[1]));
-    if (lock && lock.__locked) {
-      await tg('sendMessage', { chat_id: chatId, text: 'لديك طلب آخر قيد المعالجة. انتظر.' });
-    }
-    return;
-  }
-
-  const findMatch = text.match(/^\/find\s+(\S+)/);
-  if (findMatch) {
-    const lock = await withLock(fromId, () => handleFind(chatId, fromId, findMatch[1]));
-    if (lock && lock.__locked) {
-      await tg('sendMessage', { chat_id: chatId, text: 'لديك بحث آخر جاري. انتظر.' });
-    }
-    return;
-  }
-
-  // Plain text → treat as /find
-  if (!text.startsWith('/')) {
-    const lock = await withLock(fromId, () => handleFind(chatId, fromId, text.trim()));
-    if (lock && lock.__locked) {
-      await tg('sendMessage', { chat_id: chatId, text: 'لديك بحث آخر جاري. انتظر.' });
-    }
-    return;
+    return handleCheck(chatId, fromId, checkMatch[1]);
   }
 
   // Unknown command
-  await tg('sendMessage', { chat_id: chatId, text: 'أمر غير معروف. أرسل /help لعرض الأوامر.' });
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: 'أمر غير معروف. أرسل /help لعرض الأوامر.\nأو أرسل /2 ... /8 لعرض يوزرات متاحة.',
+  });
 }
 
 async function main() {
   console.log(`[bot] run-once started at ${new Date().toISOString()}`);
   let processed = 0;
-  const MAX_PROCESS = 1; // Process only 1 message per run (each /find takes 1-3 min)
+  const MAX_PROCESS = 1; // Process only 1 message per run (each /N takes 1-4 min)
 
   let offset = 0;
   while (processed < MAX_PROCESS) {
