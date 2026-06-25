@@ -1,27 +1,26 @@
-name: TikTok Bot - Check Mentions
+name: Telegram Bot Poll
 
 on:
   schedule:
+    # Run every 5 minutes (cron: min hour day month weekday)
+    # NOTE: GitHub Actions cron can be delayed up to 15-30 min during high load.
+    # This is the most frequent allowed schedule.
     - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual trigger from Actions tab
 
-  workflow_dispatch:
-    inputs:
-      max_replies:
-        description: 'عدد الردود الأقصى'
-        required: false
-        default: '5'
-      personality:
-        description: 'شخصية البوت (friendly/funny/critic/informative)'
-        required: false
-        default: 'friendly'
+permissions:
+  contents: read
+
+concurrency:
+  group: bot-poll
+  cancel-in-progress: false
 
 jobs:
-  check-mentions:
+  poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -29,72 +28,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Chrome
-        run: |
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list'
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          google-chrome --version
-
       - name: Install dependencies
         run: |
-          npm init -y
-          npm install z-ai-web-dev-sdk puppeteer puppeteer-extra puppeteer-extra-plugin-stealth dotenv
+          cd username-bot
+          npm install --no-audit --no-fund --omit=dev
 
-      - name: Setup z-ai config (multiple locations)
-        run: |
-          # v9.2: SDK يحتاج baseUrl + apiKey مش provider!
-          CONFIG_CONTENT='{"baseUrl":"https://internal-api.z.ai/v1","apiKey":"Z.ai"}'
-          
-          # 1. ملف في مجلد المشروع
-          echo "$CONFIG_CONTENT" > .z-ai-config
-          
-          # 2. ملف في مجلد البيت
-          echo "$CONFIG_CONTENT" > $HOME/.z-ai-config
-          
-          # 3. ملف في /etc
-          echo "$CONFIG_CONTENT" | sudo tee /etc/.z-ai-config > /dev/null
-          
-          echo "✅ z-ai config created with correct format (baseUrl + apiKey)"
-          echo "Contents:"
-          cat .z-ai-config
-
-      - name: Run TikTok Bot v10.1
+      - name: Run bot
         env:
-          TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
-          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
-          TIKTOK_SESSION: ${{ secrets.TIKTOK_SESSION }}
-          MAX_REPLIES_PER_RUN: ${{ github.event.inputs.max_replies || '5' }}
-          BOT_PERSONALITY: ${{ github.event.inputs.personality || 'friendly' }}
-          BOT_LANGUAGE: ar
-          SAFE_MODE: true
-          SINGLE_RUN: true
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome-stable
-          DISPLAY: ':99'
-          DEBUG_DIR: /tmp/bot-debug
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
-          sudo apt-get install -y xvfb
-          Xvfb :99 -screen 0 1920x1080x24 &
-          sleep 2
-          node src/puppeteer/bot.js 2>&1 | tee /tmp/bot-output.log || true
-
-      - name: Upload debug screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-debug-screenshots
-          path: /tmp/bot-debug/
-          retention-days: 3
-
-      - name: Upload bot log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bot-log
-          path: /tmp/bot-output.log
-          retention-days: 3
-
-      - name: Bot completed
-        if: always()
-        run: echo "Bot v10.1 run completed at $(date)"
+          cd username-bot
+          node bot-once.js
