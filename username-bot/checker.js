@@ -157,9 +157,15 @@ async function findAvailableStreaming(base, targetCount, opts = {}, onAvailable)
   const found = [];
   let taken = 0;
   let checked = 0;
+  const t0 = Date.now();
+  const TIME_BUDGET_MS = (opts.timeBudgetSec || 180) * 1000; // 3 min hard cap by default
 
   for (const u of candidates) {
     if (found.length >= targetCount) break;
+    if (Date.now() - t0 > TIME_BUDGET_MS) {
+      if (opts.verbose) console.log(`  [time-budget] hit ${TIME_BUDGET_MS/1000}s, stopping early`);
+      break;
+    }
     const r = await checkFast(u, opts);
     checked++;
     const platforms = ['tiktok', 'snapchat', 'instagram'];

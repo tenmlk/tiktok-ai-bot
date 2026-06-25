@@ -59,7 +59,7 @@ async function handleFind(chatId, fromId, baseRaw) {
   const t0 = Date.now();
 
   try {
-    const r = await findAvailableStreaming(base, TARGET, { verbose: true }, async (item) => {
+    const r = await findAvailableStreaming(base, TARGET, { verbose: true, timeBudgetSec: 150 }, async (item) => {
       foundCount++;
       const plat = item.availableOn.map((p) => `${PLATFORM_EMOJI[p]} ${PLATFORM_NAME[p]}`).join('  ');
       await tg('sendMessage', {
@@ -141,7 +141,7 @@ async function handleStart(chatId, name) {
       `  • /check <username> للتحقق من يوزر معيّن\n` +
       `  • /help لعرض المساعدة\n\n` +
       `⚠️ ملاحظة: البوت يعمل بنوبات كل 5 دقائق، فالرد قد يتأخر حتى 5 دقائق.\n` +
-      `⏱️ كل بحث يستغرق 30-90 ثانية.`,
+      `⏱️ كل بحث يستغرق 30-180 ثانية، وكل 5 دقايق البوت يفحص رسائله.`,
   });
 }
 
@@ -203,7 +203,7 @@ async function processUpdate(update) {
 async function main() {
   console.log(`[bot] run-once started at ${new Date().toISOString()}`);
   let processed = 0;
-  const MAX_PROCESS = 5; // Process max 5 messages per run (to stay under GitHub Action timeout)
+  const MAX_PROCESS = 1; // Process only 1 message per run (each /find takes 1-3 min)
 
   let offset = 0;
   while (processed < MAX_PROCESS) {
