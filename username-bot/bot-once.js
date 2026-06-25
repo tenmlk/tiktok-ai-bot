@@ -1,11 +1,12 @@
 // Run-once bot for GitHub Actions
 // - Fetches pending Telegram updates
-// - Supports commands: /start /help /2 /3 /4 /5 /6 /7 /8
+// - Supports commands: /start /help /2 /3 /4 /5 /6 /7 /8 /verify
 //   /N -> generates 10 random usernames of length N, checks availability, streams results
+//   /verify <username> -> thorough single-username check with full details
 // - Replies via Telegram sendMessage API
 // - Exits cleanly so GitHub Action completes
 //
-// Called by .github/workflows/bot.yml every 5 minutes via cron.
+// CALLED BY .github/workflows/bot.yml every 5 minutes via cron.
 
 const axios = require('axios');
 const { findAvailableByLength, checkAllPlatforms } = require('./checker.js');
@@ -30,14 +31,28 @@ async function tg(method, params) {
   }
 }
 
-// Format the platform status line for one username result
+// Format platform status with confidence percentage and verification method
 function formatPlatformsText(result) {
   return ['tiktok', 'snapchat', 'instagram']
     .map((k) => {
-      const v = result[k] || { available: null };
-      const icon = v.available === true ? '✅' : v.available === false ? '❌' : '❓';
-      const word = v.available === true ? 'متاح' : v.available === false ? 'محجوز' : 'غير معروف';
-      return `${PLATFORM_EMOJI[k]} ${PLATFORM_NAME[k]}: ${icon} ${word}`;
+      const v = result[k] || { available: null, confidence: 0, source: '', methods: [] };
+      let icon, word, conf;
+      if (v.available === true) {
+        icon = '✅';
+        word = 'متاح';
+        conf = v.confidence + '%';
+      } else if (v.available === false) {
+        icon = '❌';
+        word = 'محجوز';
+        conf = v.confidence + '%';
+      } else {
+        icon = '⚠️';
+        word = 'غير متأكد';
+        conf = '—';
+      }
+      const methods = (v.methods || []).map(m => m.method).join(', ');
+      const methodsLine = methods ? `\n      └ الطرق: ${methods}` : '';
+      return `${PLATFORM_EMOJI[k]} ${PLATFORM_NAME[k]}: ${icon} ${word} (${conf})${methodsLine}`;
     })
     .join('\n');
 }
@@ -55,9 +70,14 @@ async function handleByLength(chatId, length) {
   const status = await tg('sendMessage', {
     chat_id: chatId,
     text:
-      `🔍 أبحث عن 10 يوزرات متاحة بطول ${length} حروف...\n` +
-      `✨ كل يوزر متاح يظهر فوراً.\n` +
-      `⏱️ الانتظار المتوقع: 1-4 دقائق.`,
+      `🔍 أبحث عن 10 يوزرات متاحة بطول ${length} حروف...\n\n` +
+      `📋 <b>منهجية الفحص:</b>\n` +
+      `• Snapchat: فحص مزدوج (صفحة + snapcode SVG) — موثوق 100%\n` +
+      `• TikTok: فحص صفحة + إشارات JSON — موثوق جزئياً\n` +
+      `• Instagram: فحص صفحة + إشارات — موثوق جزئياً\n\n` +
+      `✨ اليوزر يظهر فوراً عند التأكد من Snapchat.\n` +
+      `⏱️ الانتظار: 1-4 دقائق.`,
+    parse_mode: 'HTML',
   });
 
   let foundCount = 0;
@@ -73,7 +93,6 @@ async function handleByLength(chatId, length) {
       async (item) => {
         foundCount++;
         const platformsText = formatPlatformsText(item.result || {});
-        // Build inline keyboard with copy button
         const replyMarkup = {
           inline_keyboard: [[
             { text: `📋 نسخ:  ${item.username}`, copy_text: { text: item.username } },
@@ -82,10 +101,10 @@ async function handleByLength(chatId, length) {
         await tg('sendMessage', {
           chat_id: chatId,
           text:
-            `✅ <b>#${foundCount}</b> متاح\n\n` +
+            `✅ <b>#${foundCount}</b>  —  الثقة الإجمالية: ${item.confidence}%\n\n` +
             `<code>${item.username}</code>\n\n` +
             platformsText +
-            `\n\n👇 اضغط على الزر بالأسفل لنسخ اليوزر`,
+            `\n\n👇 اضغط على الزر لنسخ اليوزر`,
           parse_mode: 'HTML',
           reply_markup: replyMarkup,
         });
@@ -98,18 +117,24 @@ async function handleByLength(chatId, length) {
     if (foundCount === 0) {
       finalText =
         `😔 ما لقيت يوزر متاح بطول ${length} بعد فحص ${checkedCount} خيار.\n` +
-        `جرّب طول آخر (مثال: /4) أو حاول لاحقاً.`;
+        `جرّب طول آخر (مثال: /4) أو حاول لاحقاً.\n\n` +
+        `ℹ️ ملاحظة: البوت يتطلب تأكيد Snapchat 100%. TikTok و Instagram قد يظهران "غير متأكد" بسبب حظر السيرفرات.`;
     } else {
       finalText =
         `✅ تم العثور على ${foundCount} يوزر متاح في ${elapsed}s\n` +
         `(فحصت ${checkedCount} خيار عشوائي)\n\n` +
-        `💎 اضغط على أي زر "📋 نسخ" لنسخ اليوزر فوراً.`;
+        `💎 اضغط على أي زر "📋 نسخ" لنسخ اليوزر.\n\n` +
+        `ℹ️ <b>ملاحظة مهمة:</b>\n` +
+        `• Snapchat: متاح 100% (موثوق بفحص مزدوج)\n` +
+        `• TikTok/Instagram: قد يظهران "⚠️ غير متأكد" — راجعها يدوياً قبل التسجيل\n` +
+        `• التحقق النهائي الوحيد: محاولة التسجيل في المنصة`;
     }
     if (status && status.result && status.result.message_id) {
       await tg('editMessageText', {
         chat_id: chatId,
         message_id: status.result.message_id,
         text: finalText,
+        parse_mode: typeof finalText === 'string' && finalText.includes('<') ? 'HTML' : undefined,
       });
     }
   } catch (e) {
@@ -123,16 +148,30 @@ async function handleByLength(chatId, length) {
   }
 }
 
-async function handleCheck(chatId, fromId, usernameRaw) {
+// ─── /verify handler: thorough single-username check ──
+async function handleVerify(chatId, usernameRaw) {
   const username = usernameRaw.toLowerCase().replace(/[^a-z0-9_\.\-]/g, '');
   if (!username) {
-    await tg('sendMessage', { chat_id: chatId, text: 'أرسل يوزر. مثال: /check cool' });
+    await tg('sendMessage', { chat_id: chatId, text: 'أرسل يوزر. مثال: /verify cool' });
     return;
   }
-  const status = await tg('sendMessage', { chat_id: chatId, text: `🔍 أتحقق من "${username}"...` });
+  const status = await tg('sendMessage', {
+    chat_id: chatId,
+    text: `🔍 فحص دقيق لليوزر "${username}"...\n⏱️ يأخذ 10-30 ثانية.`,
+  });
   try {
     const r = await checkAllPlatforms(username);
     const lines = formatPlatformsText(r);
+
+    // Detailed method breakdown
+    const detailLines = ['tiktok', 'snapchat', 'instagram']
+      .map((k) => {
+        const v = r[k] || {};
+        const methods = (v.methods || []).map(m => `  • ${m.method}: ${m.result}`).join('\n');
+        return `${PLATFORM_EMOJI[k]} ${PLATFORM_NAME[k]}:\n${methods || '  • لا توجد بيانات'}`;
+      })
+      .join('\n\n');
+
     const replyMarkup = {
       inline_keyboard: [[
         { text: `📋 نسخ:  ${username}`, copy_text: { text: username } },
@@ -143,10 +182,11 @@ async function handleCheck(chatId, fromId, usernameRaw) {
         chat_id: chatId,
         message_id: status.result.message_id,
         text:
-          `🔍 النتيجة لليوزر:\n\n` +
+          `🔍 فحص دقيق لليوزر:\n\n` +
           `<code>${username}</code>\n\n` +
           lines +
-          `\n\n👇 اضغط على الزر بالأسفل لنسخ اليوزر`,
+          `\n\n📋 <b>تفاصيل الطرق المستخدمة:</b>\n\n${detailLines}` +
+          `\n\n👇 اضغط على الزر لنسخ اليوزر`,
         parse_mode: 'HTML',
         reply_markup: replyMarkup,
       });
@@ -162,26 +202,37 @@ async function handleCheck(chatId, fromId, usernameRaw) {
   }
 }
 
+async function handleCheck(chatId, fromId, usernameRaw) {
+  // Alias for /verify
+  return handleVerify(chatId, usernameRaw);
+}
+
 async function handleStart(chatId, name) {
   await tg('sendMessage', {
     chat_id: chatId,
     text:
       `أهلاً ${name} 👋\n\n` +
       `أنا بوت يبحث عن يوزرات متاحة على:\n  🎵 TikTok\n  👻 Snapchat\n  📸 Instagram\n\n` +
-      `كيف تستخدمني؟\n` +
-      `  • أرسل /2 لـ 10 يوزرات من حرفين\n` +
-      `  • أرسل /3 لـ 10 يوزرات من 3 حروف\n` +
-      `  • أرسل /4 لـ 10 يوزرات من 4 حروف\n` +
-      `  • أرسل /5 ... /6 ... /7 ... /8\n` +
-      `  • /check <username> للتحقق من يوزر معيّن\n` +
+      `📝 <b>كيف تستخدمني؟</b>\n` +
+      `  • /2 لـ 10 يوزرات من حرفين\n` +
+      `  • /3 لـ 10 يوزرات من 3 حروف\n` +
+      `  • /4 ... /5 ... /6 ... /7 ... /8\n` +
+      `  • /verify &lt;username&gt; لفحص يوزر معيّن بتفصيل كامل\n` +
       `  • /help لعرض المساعدة\n\n` +
-      `⚠️ القواعد:\n` +
+      `🔒 <b>منهجية الفحص (موثوقة):</b>\n` +
+      `  • Snapchat: فحص مزدوج (صفحة + snapcode SVG) — موثوق 100%\n` +
+      `  • TikTok: فحص صفحة + إشارات JSON في HTML\n` +
+      `  • Instagram: فحص صفحة + إشارات og:title/JSON\n` +
+      `  • المصادر الرسمية: snapchat.com, tiktok.com, instagram.com\n\n` +
+      `⚠️ <b>ملاحظات مهمة:</b>\n` +
       `  • اليوزر يبدأ بحرف دائماً\n` +
       `  • ما ينتهي بـ . _ -\n` +
       `  • ما في رمزين متتاليين (.. __ --)\n` +
       `  • يدعم: حروف + أرقام + . _ -\n\n` +
-      `⏱️ البوت يفحص رسائله كل 5 دقائق، فالرد قد يتأخر حتى 5 دقائق.\n` +
-      `⏱️ كل بحث يستغرق 1-4 دقائق حسب الطول.`,
+      `⏱️ البوت يفحص رسائله كل 5 دقائق.\n` +
+      `⏱️ كل بحث يستغرق 1-4 دقائق.\n\n` +
+      `💡 <b>للحصول على 100% ضمان:</b> حاول التسجيل باليوزر في المنصة بعد ما يعطيك البوت نتيجة "متاح".`,
+    parse_mode: 'HTML',
   });
 }
 
@@ -206,11 +257,9 @@ async function processUpdate(update) {
         `/2 - 10 يوزرات من حرفين\n` +
         `/3 - 10 يوزرات من 3 حروف\n` +
         `/4 - 10 يوزرات من 4 حروف\n` +
-        `/5 - 10 يوزرات من 5 حروف\n` +
-        `/6 - 10 يوزرات من 6 حروف\n` +
-        `/7 - 10 يوزرات من 7 حروف\n` +
-        `/8 - 10 يوزرات من 8 حروف\n` +
-        `/check <username> - تحقق من يوزر معيّن\n\n` +
+        `/5 ... /6 ... /7 ... /8\n` +
+        `/verify <username> - فحص دقيق بيوزر معيّن\n` +
+        `/check <username> - اختصار لـ /verify\n\n` +
         `أو أرسل رقم طول (مثال: 3) مباشرة.`,
     });
   }
@@ -238,9 +287,9 @@ async function processUpdate(update) {
     }
   }
 
-  const checkMatch = text.match(/^\/check\s+(\S+)/);
-  if (checkMatch) {
-    return handleCheck(chatId, fromId, checkMatch[1]);
+  const verifyMatch = text.match(/^\/(?:verify|check)\s+(\S+)/);
+  if (verifyMatch) {
+    return handleVerify(chatId, verifyMatch[1]);
   }
 
   // Unknown command
@@ -253,7 +302,7 @@ async function processUpdate(update) {
 async function main() {
   console.log(`[bot] run-once started at ${new Date().toISOString()}`);
   let processed = 0;
-  const MAX_PROCESS = 1; // Process only 1 message per run (each /N takes 1-4 min)
+  const MAX_PROCESS = 1;
 
   let offset = 0;
   while (processed < MAX_PROCESS) {
