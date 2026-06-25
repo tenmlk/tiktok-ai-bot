@@ -1,49 +1,21 @@
-// Username availability checker — uses Z.ai page_reader (works on GitHub Actions via ZAI_CONFIG secret)
+// Username availability checker — pure axios (no Z.ai dependency)
+// Works on GitHub Actions with a normal public IP.
 //
 // Username rules (compatible with TikTok / Snapchat / Instagram):
 //   - First char MUST be a letter
 //   - Last char MUST be a letter or digit (never '.', '_', '-')
-//   - No two consecutive symbol chars ('..', '__', '--', '._', '-_', etc.)
+//   - No two consecutive symbol chars ('..', '__', '--', etc.)
 //   - Allowed: [a-z] [0-9] . _ -
 //   - Length range: 2..15
 
-let ZAI;
-try {
-  ZAI = require('z-ai-web-dev-sdk').default;
-} catch (e) {
-  console.error('z-ai-web-dev-sdk not installed');
-  ZAI = null;
-}
-const fs = require('fs');
-const path = require('path');
+const axios = require('axios');
 
-let zaiInstance = null;
-async function getZai() {
-  if (!ZAI) throw new Error('z-ai-web-dev-sdk missing');
-  if (zaiInstance) return zaiInstance;
-
-  // On GitHub Actions, write config from env var ZAI_CONFIG (JSON string)
-  if (process.env.ZAI_CONFIG && !fs.existsSync('/etc/.z-ai-config')) {
-    const configPaths = [
-      path.join(process.cwd(), '.z-ai-config'),
-      path.join(require('os').homedir(), '.z-ai-config'),
-    ];
-    for (const p of configPaths) {
-      try {
-        fs.writeFileSync(p, process.env.ZAI_CONFIG);
-        console.log('[zai] wrote config to', p);
-        break;
-      } catch (e) { /* ignore */ }
-    }
-  }
-
-  zaiInstance = await ZAI.create();
-  return zaiInstance;
-}
+const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const UA_MOBILE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const INTER_REQUEST_MS = 2200;
+const INTER_REQUEST_MS = 1200; // throttle slightly
 let _chain = Promise.resolve();
 function serialize(task) {
   const next = _chain.then(() => task());
@@ -51,94 +23,119 @@ function serialize(task) {
   return next;
 }
 
-async function fetchViaZai(url) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const r = await serialize(async () => {
-        const zai = await getZai();
-        return zai.functions.invoke('page_reader', { url });
-      });
-      if (r && r.code === 200 && r.data) {
-        return {
-          code: 200,
-          title: r.data.title || '',
-          description: r.data.description || '',
-          html: r.data.html || '',
-        };
-      }
-      return null;
-    } catch (e) {
-      const msg = String(e.message || e);
-      if (msg.includes('429') || msg.toLowerCase().includes('too many requests')) {
-        const wait = 15000 * (attempt + 1);
-        console.log(`  [zai] 429, waiting ${wait / 1000}s...`);
-        await sleep(wait);
-        continue;
-      }
-      if (attempt < 2) {
-        await sleep(2000);
-        continue;
-      }
-      return null;
-    }
+async function fetchRaw(url, opts = {}) {
+  const headers = {
+    'User-Agent': opts.ua || UA_DESKTOP,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+  };
+  if (opts.referer) headers['Referer'] = opts.referer;
+
+  try {
+    const r = await axios.get(url, {
+      timeout: 15000,
+      headers,
+      maxRedirects: 5,
+      validateStatus: () => true,
+      responseType: 'text',
+      decompress: true,
+    });
+    return { status: r.status, data: typeof r.data === 'string' ? r.data : '', headers: r.headers || {} };
+  } catch (e) {
+    return { error: e.message };
   }
-  return null;
 }
 
-async function checkTikTok(username) {
-  const r = await fetchViaZai(`https://www.tiktok.com/@${username}`);
-  if (!r) return { available: null, source: 'zai-error' };
-  const desc = r.description || '';
-  const title = r.title || '';
-  // TikTok: "Couldn't find this account" => available
-  if (desc.toLowerCase().includes('couldn\'t find this account') ||
-      title.toLowerCase().includes('couldn\'t find this account')) {
-    return { available: true, source: 'zai-notfound' };
-  }
-  // Taken: description contains "@username on TikTok"
-  if (desc.includes(`@${username}`) && desc.toLowerCase().includes('on tiktok')) {
-    return { available: false, source: 'zai-desc' };
-  }
-  // Empty description + empty title => likely available
-  if (desc.trim() === '' && title.trim() === '') {
-    return { available: true, source: 'zai-empty' };
-  }
-  // Anything else => taken
-  return { available: false, source: 'zai-other' };
-}
-
+// ─── Snapchat ──────────────────────────────────────────────────────────────
+// snapchat.com/add/{u} → 200 (taken) or 404 (available). Clean signal.
 async function checkSnapchat(username) {
-  const r = await fetchViaZai(`https://www.snapchat.com/add/${username}`);
-  if (!r) return { available: null, source: 'zai-error' };
-  if (r.description && r.description.toLowerCase().includes('is on snapchat')) {
-    return { available: false, source: 'zai-desc' };
+  const r = await serialize(() => fetchRaw(`https://www.snapchat.com/add/${username}`, { ua: UA_MOBILE }));
+  if (r.error) return { available: null, source: 'error' };
+  if (r.status === 404) return { available: true, source: 'http404' };
+  if (r.status === 200) {
+    const html = r.data;
+    if (html.toLowerCase().includes('is on snapchat')) return { available: false, source: 'desc' };
+    if (html.toLowerCase().includes('page not found')) return { available: true, source: 'title' };
+    // Default: 200 means page exists => taken
+    return { available: false, source: 'http200' };
   }
-  if (r.title && r.title.toLowerCase().includes('page not found')) {
-    return { available: true, source: 'zai-title' };
-  }
-  if (!r.description || r.description.trim() === '') {
-    return { available: true, source: 'zai-empty' };
-  }
-  return { available: false, source: 'zai-other' };
+  return { available: null, source: 'http' + r.status };
 }
 
+// ─── TikTok ────────────────────────────────────────────────────────────────
+// tiktok.com/@{u} → taken page has "unique_id":"..." or "@u On TikTok"
+//                   not-found page has "Couldn't find this account"
+async function checkTikTok(username) {
+  const r = await serialize(() => fetchRaw(`https://www.tiktok.com/@${username}?lang=en`, { ua: UA_DESKTOP, referer: 'https://www.tiktok.com/' }));
+  if (r.error) return { available: null, source: 'error' };
+  if (r.status === 404) return { available: true, source: 'http404' };
+  if (r.status === 200) {
+    const html = r.data;
+    const lower = html.toLowerCase();
+    // Not found indicators
+    if (lower.includes('couldn\'t find this account') ||
+        lower.includes('couldn’t find this account') ||
+        lower.includes('page not available') ||
+        lower.includes('this page could not be found')) {
+      return { available: true, source: 'notfound' };
+    }
+    // Taken indicators (from SIGI_STATE / __UNIVERSAL_DATA)
+    if (html.includes('"unique_id":"' + username + '"') ||
+        html.includes('"unique_id": "' + username + '"') ||
+        html.includes('webapp.user-detail') ||
+        html.toLowerCase().includes('@' + username + ' on tiktok') ||
+        html.toLowerCase().includes('on tiktok |')) {
+      return { available: false, source: 'desc' };
+    }
+    // Cloudflare challenge page (small body, contains cf-challenge)
+    if (lower.includes('cf-challenge') || lower.includes('just a moment') || html.length < 30000) {
+      return { available: null, source: 'cf-block' };
+    }
+    // Default: unknown (don't assume taken — could be a challenge page we don't recognize)
+    return { available: null, source: 'ambiguous' };
+  }
+  return { available: null, source: 'http' + r.status };
+}
+
+// ─── Instagram ─────────────────────────────────────────────────────────────
+// instagram.com/{u}/ → taken page contains "log_in" link + meta og:title with username
+//                     not-found page returns 404 OR contains "Sorry, this page isn't available"
 async function checkInstagram(username) {
-  const r = await fetchViaZai(`https://www.picnob.com/profile/${username}/`);
-  if (!r) return { available: null, source: 'zai-error' };
-  if (r.title && r.title.toLowerCase().includes('page not found')) {
-    return { available: true, source: 'zai-picnob' };
+  const r = await serialize(() => fetchRaw(`https://www.instagram.com/${username}/`, { ua: UA_DESKTOP, referer: 'https://www.instagram.com/' }));
+  if (r.error) return { available: null, source: 'error' };
+  if (r.status === 404) return { available: true, source: 'http404' };
+  if (r.status === 200) {
+    const html = r.data;
+    const lower = html.toLowerCase();
+    if (lower.includes('sorry, this page isn\'t available') ||
+        lower.includes('sorry, this page isn’t available') ||
+        lower.includes('page may have been removed')) {
+      return { available: true, source: 'notfound' };
+    }
+    if (lower.includes('cf-challenge') || lower.includes('just a moment') || html.length < 30000) {
+      return { available: null, source: 'cf-block' };
+    }
+    // Taken indicators
+    if (lower.includes('og:title" content="@' + username + '"') ||
+        lower.includes('"username":"' + username + '"') ||
+        lower.includes('@' + username + ' • instagram photos')) {
+      return { available: false, source: 'meta' };
+    }
+    // Default: unknown
+    return { available: null, source: 'ambiguous' };
   }
-  if (r.title && r.title.toLowerCase().includes(username.toLowerCase())) {
-    return { available: false, source: 'zai-picnob' };
-  }
-  // Try title containing "Instagram" + username (taken)
-  if (r.description && r.description.toLowerCase().includes(username.toLowerCase())) {
-    return { available: false, source: 'zai-desc' };
-  }
-  return { available: null, source: 'zai-ambiguous' };
+  return { available: null, source: 'http' + r.status };
 }
 
-// Fast check: Snapchat first (cheap). If taken, skip TikTok+IG.
+// ─── Fast check: Snapchat first (cheap). If taken, skip TikTok+IG ───────
 async function checkFast(username, opts = {}) {
   const verbose = opts.verbose;
   if (verbose) console.log(`  [${username}] snap...`);
@@ -234,7 +231,7 @@ async function findAvailableByLength(length, targetCount, opts = {}, onAvailable
     } else if (takenOn.length > 0) {
       taken++;
     }
-    await sleep(150);
+    await sleep(80);
   }
 
   return { found, takenCount: taken, checkedCount: checked, candidatesTotal: candidates.length };
