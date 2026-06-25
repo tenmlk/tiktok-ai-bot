@@ -1,18 +1,43 @@
-// Username availability checker — length-based random generation
-// Uses Z.ai page_reader (bypasses Cloudflare, geo-blocks)
+// Username availability checker — uses Z.ai page_reader (works on GitHub Actions via ZAI_CONFIG secret)
 //
-// Rules enforced (compatible with TikTok / Snapchat / Instagram):
+// Username rules (compatible with TikTok / Snapchat / Instagram):
 //   - First char MUST be a letter
 //   - Last char MUST be a letter or digit (never '.', '_', '-')
 //   - No two consecutive symbol chars ('..', '__', '--', '._', '-_', etc.)
 //   - Allowed: [a-z] [0-9] . _ -
 //   - Length range: 2..15
 
-const ZAI = require('z-ai-web-dev-sdk').default;
+let ZAI;
+try {
+  ZAI = require('z-ai-web-dev-sdk').default;
+} catch (e) {
+  console.error('z-ai-web-dev-sdk not installed');
+  ZAI = null;
+}
+const fs = require('fs');
+const path = require('path');
 
 let zaiInstance = null;
 async function getZai() {
-  if (!zaiInstance) zaiInstance = await ZAI.create();
+  if (!ZAI) throw new Error('z-ai-web-dev-sdk missing');
+  if (zaiInstance) return zaiInstance;
+
+  // On GitHub Actions, write config from env var ZAI_CONFIG (JSON string)
+  if (process.env.ZAI_CONFIG && !fs.existsSync('/etc/.z-ai-config')) {
+    const configPaths = [
+      path.join(process.cwd(), '.z-ai-config'),
+      path.join(require('os').homedir(), '.z-ai-config'),
+    ];
+    for (const p of configPaths) {
+      try {
+        fs.writeFileSync(p, process.env.ZAI_CONFIG);
+        console.log('[zai] wrote config to', p);
+        break;
+      } catch (e) { /* ignore */ }
+    }
+  }
+
+  zaiInstance = await ZAI.create();
   return zaiInstance;
 }
 
@@ -45,13 +70,13 @@ async function fetchViaZai(url) {
     } catch (e) {
       const msg = String(e.message || e);
       if (msg.includes('429') || msg.toLowerCase().includes('too many requests')) {
-        const wait = 18000 * (attempt + 1);
+        const wait = 15000 * (attempt + 1);
         console.log(`  [zai] 429, waiting ${wait / 1000}s...`);
         await sleep(wait);
         continue;
       }
       if (attempt < 2) {
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
       return null;
@@ -63,12 +88,22 @@ async function fetchViaZai(url) {
 async function checkTikTok(username) {
   const r = await fetchViaZai(`https://www.tiktok.com/@${username}`);
   if (!r) return { available: null, source: 'zai-error' };
-  if (r.description && r.description.includes(`@${username}`) && r.description.toLowerCase().includes('on tiktok')) {
+  const desc = r.description || '';
+  const title = r.title || '';
+  // TikTok: "Couldn't find this account" => available
+  if (desc.toLowerCase().includes('couldn\'t find this account') ||
+      title.toLowerCase().includes('couldn\'t find this account')) {
+    return { available: true, source: 'zai-notfound' };
+  }
+  // Taken: description contains "@username on TikTok"
+  if (desc.includes(`@${username}`) && desc.toLowerCase().includes('on tiktok')) {
     return { available: false, source: 'zai-desc' };
   }
-  if (!r.description || r.description.trim() === '') {
+  // Empty description + empty title => likely available
+  if (desc.trim() === '' && title.trim() === '') {
     return { available: true, source: 'zai-empty' };
   }
+  // Anything else => taken
   return { available: false, source: 'zai-other' };
 }
 
@@ -77,6 +112,9 @@ async function checkSnapchat(username) {
   if (!r) return { available: null, source: 'zai-error' };
   if (r.description && r.description.toLowerCase().includes('is on snapchat')) {
     return { available: false, source: 'zai-desc' };
+  }
+  if (r.title && r.title.toLowerCase().includes('page not found')) {
+    return { available: true, source: 'zai-title' };
   }
   if (!r.description || r.description.trim() === '') {
     return { available: true, source: 'zai-empty' };
@@ -93,10 +131,14 @@ async function checkInstagram(username) {
   if (r.title && r.title.toLowerCase().includes(username.toLowerCase())) {
     return { available: false, source: 'zai-picnob' };
   }
+  // Try title containing "Instagram" + username (taken)
+  if (r.description && r.description.toLowerCase().includes(username.toLowerCase())) {
+    return { available: false, source: 'zai-desc' };
+  }
   return { available: null, source: 'zai-ambiguous' };
 }
 
-// Fast check: Snapchat first (cheap). If taken, skip TikTok+IG entirely.
+// Fast check: Snapchat first (cheap). If taken, skip TikTok+IG.
 async function checkFast(username, opts = {}) {
   const verbose = opts.verbose;
   if (verbose) console.log(`  [${username}] snap...`);
@@ -120,10 +162,10 @@ const ALL_MID = ALNUM + SYMBOLS;
 function isValidUsername(u) {
   if (!u) return false;
   if (u.length < 2 || u.length > 15) return false;
-  if (!/^[a-z]/.test(u)) return false;                 // starts with letter
-  if (!/[a-z0-9]$/.test(u)) return false;               // ends with letter/digit (NOT . _ -)
-  if (!/^[a-z0-9._-]+$/.test(u)) return false;          // only allowed chars
-  if (/[\._\-]{2,}/.test(u)) return false;              // no consecutive symbols
+  if (!/^[a-z]/.test(u)) return false;
+  if (!/[a-z0-9]$/.test(u)) return false;
+  if (!/^[a-z0-9._-]+$/.test(u)) return false;
+  if (/[\._\-]{2,}/.test(u)) return false;
   return true;
 }
 
@@ -132,15 +174,12 @@ function randomFrom(str) {
 }
 
 function generateOne(length) {
-  // first char: letter
   let u = randomFrom(LETTERS);
   for (let i = 1; i < length; i++) {
-    // if previous was a symbol, force alnum
     const lastChar = u[u.length - 1];
     const pool = SYMBOLS.includes(lastChar) ? ALNUM : ALL_MID;
     u += randomFrom(pool);
   }
-  // last char must be alnum (if not, replace)
   if (SYMBOLS.includes(u[u.length - 1])) {
     u = u.slice(0, -1) + randomFrom(ALNUM);
   }
@@ -188,7 +227,6 @@ async function findAvailableByLength(length, targetCount, opts = {}, onAvailable
       console.log(`  ${u}: avail=[${availOn.join(',')}] taken=[${takenOn.join(',')}] ${r.__skipped ? '(skipped)' : ''}`);
     }
 
-    // Accept if at least one platform available AND none taken
     if (availOn.length >= 1 && takenOn.length === 0) {
       const item = { username: u, availableOn: availOn };
       found.push(item);

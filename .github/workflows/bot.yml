@@ -2,11 +2,10 @@ name: Telegram Bot Poll
 
 on:
   schedule:
-    # Run every 5 minutes (cron: min hour day month weekday)
-    # NOTE: GitHub Actions cron can be delayed up to 15-30 min during high load.
-    # This is the most frequent allowed schedule.
+    # Run every 5 minutes (most frequent allowed on GitHub Actions free)
+    # NOTE: GitHub Actions cron can be delayed 5-30 min during high load.
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Allow manual trigger from Actions tab
+  workflow_dispatch: # Allow manual trigger
 
 permissions:
   contents: read
@@ -36,6 +35,7 @@ jobs:
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          ZAI_CONFIG: ${{ secrets.ZAI_CONFIG }}
         run: |
           cd username-bot
           node bot-once.js
