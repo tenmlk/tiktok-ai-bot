@@ -30,6 +30,18 @@ async function tg(method, params) {
   }
 }
 
+// Format the platform status line for one username result
+function formatPlatformsText(result) {
+  return ['tiktok', 'snapchat', 'instagram']
+    .map((k) => {
+      const v = result[k] || { available: null };
+      const icon = v.available === true ? '✅' : v.available === false ? '❌' : '❓';
+      const word = v.available === true ? 'متاح' : v.available === false ? 'محجوز' : 'غير معروف';
+      return `${PLATFORM_EMOJI[k]} ${PLATFORM_NAME[k]}: ${icon} ${word}`;
+    })
+    .join('\n');
+}
+
 // ─── /N handler: generate 10 random usernames of length N, check availability ──
 async function handleByLength(chatId, length) {
   if (length < 2 || length > 8) {
@@ -60,13 +72,22 @@ async function handleByLength(chatId, length) {
       { verbose: true, timeBudgetSec: 240 },
       async (item) => {
         foundCount++;
-        const plat = item.availableOn
-          .map((p) => `${PLATFORM_EMOJI[p]} ${PLATFORM_NAME[p]}`)
-          .join('  ');
+        const platformsText = formatPlatformsText(item.result || {});
+        // Build inline keyboard with copy button
+        const replyMarkup = {
+          inline_keyboard: [[
+            { text: `📋 نسخ:  ${item.username}`, copy_text: { text: item.username } },
+          ]],
+        };
         await tg('sendMessage', {
           chat_id: chatId,
-          text: `✅ #${foundCount}:  <b>${item.username}</b>\nمتاح على: ${plat}`,
+          text:
+            `✅ <b>#${foundCount}</b> متاح\n\n` +
+            `<code>${item.username}</code>\n\n` +
+            platformsText +
+            `\n\n👇 اضغط على الزر بالأسفل لنسخ اليوزر`,
           parse_mode: 'HTML',
+          reply_markup: replyMarkup,
         });
       }
     );
@@ -81,7 +102,8 @@ async function handleByLength(chatId, length) {
     } else {
       finalText =
         `✅ تم العثور على ${foundCount} يوزر متاح في ${elapsed}s\n` +
-        `(فحصت ${checkedCount} خيار عشوائي)`;
+        `(فحصت ${checkedCount} خيار عشوائي)\n\n` +
+        `💎 اضغط على أي زر "📋 نسخ" لنسخ اليوزر فوراً.`;
     }
     if (status && status.result && status.result.message_id) {
       await tg('editMessageText', {
@@ -110,19 +132,23 @@ async function handleCheck(chatId, fromId, usernameRaw) {
   const status = await tg('sendMessage', { chat_id: chatId, text: `🔍 أتحقق من "${username}"...` });
   try {
     const r = await checkAllPlatforms(username);
-    const lines = ['tiktok', 'snapchat', 'instagram']
-      .map((k) => {
-        const v = r[k];
-        const icon = v.available === true ? '✅' : v.available === false ? '❌' : '❓';
-        const word = v.available === true ? 'متاح' : v.available === false ? 'محجوز' : 'غير معروف';
-        return `${PLATFORM_EMOJI[k]} ${PLATFORM_NAME[k]}: ${word}`;
-      })
-      .join('\n');
+    const lines = formatPlatformsText(r);
+    const replyMarkup = {
+      inline_keyboard: [[
+        { text: `📋 نسخ:  ${username}`, copy_text: { text: username } },
+      ]],
+    };
     if (status && status.result && status.result.message_id) {
       await tg('editMessageText', {
         chat_id: chatId,
         message_id: status.result.message_id,
-        text: `النتيجة لليوزر "${username}":\n\n${lines}`,
+        text:
+          `🔍 النتيجة لليوزر:\n\n` +
+          `<code>${username}</code>\n\n` +
+          lines +
+          `\n\n👇 اضغط على الزر بالأسفل لنسخ اليوزر`,
+        parse_mode: 'HTML',
+        reply_markup: replyMarkup,
       });
     }
   } catch (e) {

@@ -225,7 +225,15 @@ async function findAvailableByLength(length, targetCount, opts = {}, onAvailable
     }
 
     if (availOn.length >= 1 && takenOn.length === 0) {
-      const item = { username: u, availableOn: availOn };
+      const item = {
+        username: u,
+        availableOn: availOn,
+        result: {
+          tiktok: r.tiktok,
+          snapchat: r.snapchat,
+          instagram: r.instagram,
+        },
+      };
       found.push(item);
       if (onAvailable) await onAvailable(item);
     } else if (takenOn.length > 0) {
